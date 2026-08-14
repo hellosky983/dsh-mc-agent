@@ -19,7 +19,6 @@
 - ✅ 启动游戏：按版本 JSON 组装 Java 命令（自动展开 `${natives_directory}`、`${classpath}` 等占位符）
 - ✅ Java 自动探测：优先使用官方启动器下载的 `~/.minecraft/runtime/**/bin/java`，其次 PATH 中的 `java`
 - ✅ Microsoft 账号登录（OAuth2 设备码流程：device code → XBL → XSTS → Minecraft services → 皮肤档）
-- ✅ 离线模式（仅建议已购买正版的玩家离线使用）
 - ✅ 游戏日志实时显示、停止游戏、内存/分辨率/Java 路径等设置
 
 ## ⚖️ 法律合规（请先阅读）
@@ -30,13 +29,12 @@
 | --- | --- |
 | **第三方工具许可** | EULA 明确允许开发工具/插件/启动器，前提是"看起来不是官方项目"——本项目在界面与文档中显著标注 **UNOFFICIAL**，不模仿官方启动器外观，不使用 Mojang 官方徽标 |
 | **游戏文件分发** | 本项目**不包含、不分发**任何 Mojang 游戏内容；所有游戏文件均由启动器从 Mojang **官方服务器**（launchermeta.mojang.com、piston-meta.mojang.com、resources.download.minecraft.net）下载，符合"所有游戏下载和更新都来自我们授权的来源" |
-| **账号要求** | 正版游玩必须使用用户自己的微软账号登录（设备码流程，游戏文件本身需要合法购买）。首次使用会弹出 EULA 同意确认 |
-| **离线模式** | 仅供**已购买正版**的玩家在无法/不想登录时离线游玩；离线会话无法进入在线服务器。界面与文档均有明示 |
+| **账号要求（必须）** | **不提供离线模式**。游玩必须使用用户自己的微软账号登录（设备码流程）——EULA 规定使用游戏的前提是"您购买我们的游戏后"，绕过账号验证的启动方式（如离线模式）不在本项目范围内。首次使用会弹出 EULA 同意确认 |
 | **商标** | "Minecraft" 仅作兼容性指称（nominative use）；界面文字为纯文本样式，不使用官方 logo/资产 |
 | **Microsoft 登录** | 使用**你自己注册的 Azure 应用** client id（见下），不使用他人注册的 client id——这是微软应用条款的要求 |
 | **隐私** | 无遥测、无第三方统计；账号 token 仅保存在本机 `~/.dsh-mc/account.json`（权限 600） |
 
-> ⚠️ 本项目不用于规避付费、分发盗版或冒充官方。请尊重 Mojang 的知识产权与社区规则。
+> ⚠️ 本项目不用于规避付费、分发盗版或冒充官方。请尊重 Mojang 的知识产权与社区规则；未购买 Minecraft 请勿使用本启动器。
 
 ### 注册自己的 Azure client id（登录必需）
 
@@ -96,10 +94,9 @@ DSH_HOME=<项目>/dsh-home dsh --profile minecraft --port 39970
 | `javaPath` | Java 可执行文件路径，留空自动探测 | 自动 |
 | `memoryMb` | JVM 堆内存 | `2048` |
 | `clientId` | 你自己的 Azure 应用 ID（登录必需） | 空 |
-| `offlineMode` / `offlineName` | 离线模式与玩家名 | 关 / `Player` |
 | `width` / `height` | 游戏窗口分辨率 | 854×480 |
 
-设置保存在 `~/.dsh-mc/settings.json`，账号保存在 `~/.dsh-mc/account.json`。
+设置保存在 `~/.dsh-mc/settings.json`，账号保存在 `~/.dsh-mc/account.json`（权限 600）。
 
 ## 📁 项目结构
 
@@ -130,8 +127,8 @@ DSH 宿主进程（dsh-mc-launcher Host 半）
 
 - **Q：Sign in 报 "no Azure client id configured"？** A：按上文"注册自己的 Azure client id"操作后填入设置。
 - **Q：登录报 `AADSTS700016`？** A：说明该 client id 在你的微软目录中不存在——请使用自己注册的 client id。
-- **Q：游戏打不开？** A：查看底部控制台日志；确认 Java 版本满足所选版本要求（如 1.21+ 需要 Java 21+）。
-- **Q：离线模式能进服务器吗？** A：不能。离线会话仅限单机，且只应使用已购买的正版副本。
+- **Q：游戏打不开？** A：查看底部控制台日志；确认已登录（未登录会提示）、Java 版本满足所选版本要求（如 1.21+ 需要 Java 21+）。
+- **Q：可以离线/免账号玩吗？** A：**不可以**。本项目不提供离线模式——按 Mojang EULA，游玩必须以合法购买的账号登录。
 
 ## 📄 许可证
 

@@ -68,8 +68,6 @@ const DEFAULT_SETTINGS = {
   width: null,
   height: null,
   fullscreen: false,
-  offlineMode: false,
-  offlineName: 'Player',
   eulaAccepted: false,
 }
 
@@ -143,26 +141,13 @@ function loadSettings() {
 
 function saveSettings() {
   ensureDir(DATA_DIR)
-  fs.writeFileSync(SETTINGS_FILE, JSON.stringify(store.settings, null, 2))
-}
-
-function effectiveAccount() {
-  if (store.account) return store.account
-  if (store.settings.offlineMode) {
-    return {
-      name: store.settings.offlineName || 'Player',
-      uuid: '00000000-0000-4000-8000-' + String(Math.floor(Math.random() * 1e12)).padStart(12, '0'),
-      accessToken: '0',
-      type: 'legacy',
-    }
-  }
-  return null
+  fs.writeFileSync(SETTINGS_FILE, JSON.stringify(store.settings, null, 2), { mode: 0o600 })
 }
 
 function saveAccount() {
   ensureDir(DATA_DIR)
   if (store.account) {
-    fs.writeFileSync(ACCOUNT_FILE, JSON.stringify(store.account, null, 2))
+    fs.writeFileSync(ACCOUNT_FILE, JSON.stringify(store.account, null, 2), { mode: 0o600 })
   } else {
     try { fs.unlinkSync(ACCOUNT_FILE) } catch { /* ignore */ }
   }
@@ -892,8 +877,8 @@ async function route(req, res) {
         const java = await detectJava()
         store.javaInfo = java
         if (!java) return json(res, 500, { error: 'no Java runtime found' })
-        const account = effectiveAccount()
-        if (!account) return json(res, 403, { error: 'not signed in (sign in or enable offline mode in Settings)' })
+        const account = store.account
+        if (!account) return json(res, 403, { error: 'not signed in — sign in with your Microsoft account (playing Minecraft requires a valid, legitimately purchased account)' })
         const r = launch(id, account)
         json(res, 200, { ok: true, pid: r.pid })
         break
@@ -944,7 +929,7 @@ async function route(req, res) {
       case 'settings': {
         const body = await readBody(req)
         const patch = {}
-        for (const key of ['gameDir', 'javaPath', 'memoryMb', 'clientId', 'width', 'height', 'fullscreen', 'offlineMode', 'offlineName', 'eulaAccepted']) {
+        for (const key of ['gameDir', 'javaPath', 'memoryMb', 'clientId', 'width', 'height', 'fullscreen', 'eulaAccepted']) {
           if (body[key] !== undefined) patch[key] = body[key]
         }
         store.settings = { ...store.settings, ...patch }
