@@ -77,7 +77,7 @@ cd dsh-mc-launcher
 #   {
 #     "name": "dsh-profile-minecraft",
 #     "private": true,
-#     "dependencies": { "dsh-mc-launcher": "link:../../../../dsh-mc-launcher" },
+#     "dependencies": { "dsh-mc-launcher": "link:../../../dsh-mc-launcher" },
 #     "dsh": { "profile": { "bundles": [
 #         "@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "dsh-mc-launcher" ] } }
 #   }
