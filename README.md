@@ -86,6 +86,42 @@ DSH_HOME=<项目>/dsh-home dsh --profile minecraft --port 39970
 
 浏览器打开 `http://127.0.0.1:39970` 即为启动器页面。独立实例使用自己的 `DSH_HOME`，会话/设置/凭证与聊天实例互不影响。
 
+### 卸载（Uninstall）
+
+```bash
+# 1. 从 profile 的 package.json 中删除两处：
+#    - "dependencies" 里的 "dsh-mc-launcher" 条目
+#    - "dsh.profile.bundles" 数组里的 "dsh-mc-launcher"
+# 2. 重新安装依赖（移除符号链接与 node_modules 中的包）
+cd <你的profile目录> && pnpm install
+# 3. 重启 DSH：页面即恢复为默认界面
+# 4.（可选）删除本地数据：~/.dsh-mc/（settings.json、account.json）
+#    游戏目录 ~/.minecraft/ 不受影响，可保留
+```
+
+## 📦 兼容性（Compatibility）
+
+| 项 | 说明 |
+| --- | --- |
+| DSH 版本 | `0.1.0-rc.6`（2026-08-14 在独立 profile + web profile 实测：版本列表 / 安装 1.21.11 / 启动至游戏世界均通过） |
+| 运行环境 | Node.js 18+（DSH 宿主进程）、现代浏览器（启动器 UI） |
+| Java | 启动游戏需要；自动探测 `~/.minecraft/runtime/**/bin/java` 或 PATH 中的 `java`。不同 MC 版本对 Java 版本有要求（如 1.21+ 需 Java 21+） |
+| 系统工具 | natives 解压优先使用内置 `adm-zip`（npm 依赖），不可用时回退到系统 `unzip` 命令 |
+| 平台 | Linux / macOS / Windows（代码跨平台；Windows 下 natives 路径分隔符已处理） |
+
+> 兼容性结论可能随 DSH mainline 快速变化而失效，请以实测为准。
+
+## 🔐 权限与数据访问（Permissions & data）
+
+| 对象 | 访问内容 | 说明 |
+| --- | --- | --- |
+| 文件 `~/.minecraft/` | 读 + 写 | 版本文件、libraries、assets、存档（与官方启动器同结构） |
+| 文件 `~/.dsh-mc/` | 写（权限 600） | `settings.json`（配置）、`account.json`（登录 token） |
+| 网络：`launchermeta.mojang.com`、`piston-meta.mojang.com`、`resources.download.minecraft.net` | 只读 | 版本清单与游戏文件下载（Mojang 官方源） |
+| 网络：`login.microsoftonline.com`、`user.auth.xboxlive.com`、`xsts.auth.xboxlive.com`、`api.minecraftservices.com` | 只读 | Microsoft 设备码登录链 |
+| 进程 | 启动 Java 子进程 | 游戏本体；可被 Stop 按钮终止 |
+| 遥测/统计 | 无 | 不收集任何使用数据 |
+
 ## 📖 使用说明
 
 | 配置项 | 说明 | 默认值 |
@@ -129,6 +165,25 @@ DSH 宿主进程（dsh-mc-launcher Host 半）
 - **Q：登录报 `AADSTS700016`？** A：说明该 client id 在你的微软目录中不存在——请使用自己注册的 client id。
 - **Q：游戏打不开？** A：查看底部控制台日志；确认已登录（未登录会提示）、Java 版本满足所选版本要求（如 1.21+ 需要 Java 21+）。
 - **Q：可以离线/免账号玩吗？** A：**不可以**。本项目不提供离线模式——按 Mojang EULA，游玩必须以合法购买的账号登录。
+
+## 🧪 开发与测试（Development）
+
+```bash
+git clone https://github.com/hellosky983/dsh-mc-launcher.git
+cd dsh-mc-launcher && pnpm install        # 安装 dev 依赖（adm-zip 等）
+node --check index.js                      # Host 半语法检查
+node --check lib/client.js                 # Client 半语法检查
+```
+
+- 修改后重启 DSH 实例即可生效（bundle 插件随进程加载）
+- 手动冒烟：启动实例 → 打开页面 → 版本列表/安装/登录/启动全流程（详见上方使用说明）
+- 欢迎提交 Issue / PR；贡献前请阅读 [LICENSE](LICENSE) 与上文法律合规章节
+
+## 🛡️ 安全报告（Security）
+
+- 本项目无遥测、无第三方统计；账号 token 仅存本机（`~/.dsh-mc/account.json`，权限 600）
+- 发现安全问题（如 token 泄露路径、注入、权限缺陷）请通过 [GitHub Issues](https://github.com/hellosky983/dsh-mc-launcher/issues) 私密/公开报告，或直接提交修复 PR
+- 请勿在 Issue 中粘贴真实 token 或账号信息
 
 ## 📄 许可证
 
