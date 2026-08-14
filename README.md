@@ -50,37 +50,43 @@
 
 **环境要求**：Node.js 18+（含全局 `dsh` CLI，v0.1.0-rc.6）、DSH 宿主环境、Java（启动游戏需要；可自动探测 `~/.minecraft/runtime`）。
 
-### 作为独立 DSH 启动器实例（推荐）
+### 方式 A：安装进已有 DSH profile（简单）
 
 ```bash
-# 1. 克隆到本机
+# 1. 克隆插件
 git clone https://github.com/hellosky983/dsh-mc-launcher.git
 cd dsh-mc-launcher
 
-# 2. 创建独立 profile（DSH_HOME 隔离，不影响现有 DSH 实例）
-mkdir -p dsh-home/profiles/minecraft
-cp -r . dsh-home/profiles/minecraft/dsh-mc-launcher  # 或按需只复制插件目录
-# （更简洁的安装方式见下一节）
+# 2. 编辑你的 profile 的 package.json（如 ~/.dsh/profiles/web/package.json）
+#    "dependencies":  { "dsh-mc-launcher": "link:/绝对路径/dsh-mc-launcher" }
+#    "dsh": { "profile": { "bundles": [ ..., "dsh-mc-launcher" ] } }
 
-# 3. 编辑 dsh-home/profiles/minecraft/package.json，dependencies 加：
-#    "dsh-mc-launcher": "link:./dsh-mc-launcher"
-#    dsh.profile.bundles 数组加 "dsh-mc-launcher"
-
-# 4. 安装并启动
-cd dsh-home/profiles/minecraft && pnpm install
-DSH_HOME="$(pwd)/../.." dsh --profile minecraft --port 39970
+# 3. 安装依赖并重启 DSH
+cd <你的profile目录> && pnpm install
 ```
 
-浏览器打开 `http://127.0.0.1:39970` 即为启动器页面。
+刷新页面后，整个界面即变为启动器（`root` slot 被插件占据，`priority: -1`）。
 
-### 安装进已有 DSH profile
+### 方式 B：作为独立 DSH 启动器实例（与现有 DSH 完全隔离）
 
 ```bash
-# 在 profile 的 package.json 中：
-#   "dependencies": { "dsh-mc-launcher": "link:/path/to/dsh-mc-launcher" }
-#   "dsh": { "profile": { "bundles": [ ..., "dsh-mc-launcher" ] } }
-cd <profile目录> && pnpm install
+git clone https://github.com/hellosky983/dsh-mc-launcher.git
+cd dsh-mc-launcher
+
+# 建独立 profile：<项目>/dsh-home/profiles/minecraft/package.json：
+#   {
+#     "name": "dsh-profile-minecraft",
+#     "private": true,
+#     "dependencies": { "dsh-mc-launcher": "link:../../../../dsh-mc-launcher" },
+#     "dsh": { "profile": { "bundles": [
+#         "@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "dsh-mc-launcher" ] } }
+#   }
+
+cd <项目>/dsh-home/profiles/minecraft && pnpm install
+DSH_HOME=<项目>/dsh-home dsh --profile minecraft --port 39970
 ```
+
+浏览器打开 `http://127.0.0.1:39970` 即为启动器页面。独立实例使用自己的 `DSH_HOME`，会话/设置/凭证与聊天实例互不影响。
 
 ## 📖 使用说明
 
