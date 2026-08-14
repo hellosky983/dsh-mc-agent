@@ -19,19 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-Trademark & content notice (not part of the MIT license):
-
-"Minecraft" is a trademark of Mojang Synergies AB and "Mojang" and "Mojang
-Studios" are trademarks of Mojang Synergies AB. This project is an UNOFFICIAL
-open-source launcher. It is not affiliated with, endorsed by, or sponsored by
-Mojang Studios, Microsoft, or any of their affiliates. "Minecraft" appears in
-this project only to describe compatibility (nominative use). No Minecraft
-game assets, logos, code, or content are distributed with this software; game
-files are downloaded by the user directly from Mojang's official servers
-(launchermeta.mojang.com, piston-meta.mojang.com,
-resources.download.minecraft.net), as permitted for owners of a legitimate
-copy of the game under the Minecraft End User License Agreement
-(https://www.minecraft.net/eula).
