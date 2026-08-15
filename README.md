@@ -8,9 +8,11 @@
 
 ## 📖 项目简介
 
-`dsh-mc-launcher` 是 DeepSeek Harness（DSH）的一个正式 bundle 插件：它以 `priority: -1` 占据浏览器界面的 `root` slot，
-把整个 DSH 页面渲染成全屏 Minecraft 启动器；宿主进程负责版本清单、文件下载、Microsoft 登录与 Java 游戏进程的启动。
-游戏目录默认 `~/.minecraft`，与官方启动器完全兼容——已有版本、存档、资源直接复用。
+`dsh-mc-launcher` 是 DeepSeek Harness（DSH）的一个正式 bundle 插件，让 Minecraft 能力成为 DSH 的一等公民：
+
+- **启动器**：宿主进程负责版本清单、文件下载、Microsoft 登录与 Java 游戏进程的启动；游戏目录默认 `~/.minecraft`，与官方启动器完全兼容（已有版本、存档、资源直接复用）。
+- **AI 工具**：把启动器与游戏数据暴露为 `mc_*` 工具，让 DSH 的 agent 能通过对话安装版本、启动游戏、分析崩溃、查询存档与模组。
+- **双界面模式**：默认作为 DSH 聊天界面里的一个 "Minecraft" 标签页（保留全部 AI 能力）；也可切换为全屏启动器。
 
 ## ✨ 功能特性
 
@@ -19,6 +21,10 @@
 - ✅ 启动游戏：按版本 JSON 组装 Java 命令（自动展开 `${natives_directory}`、`${classpath}` 等占位符）
 - ✅ Java 自动探测：优先使用官方启动器下载的 `~/.minecraft/runtime/**/bin/java`，其次 PATH 中的 `java`
 - ✅ Microsoft 账号登录（OAuth2 设备码流程：device code → XBL → XSTS → Minecraft services → 皮肤档）
+- ✅ **Agent 工具集**：`mc_list_versions` / `mc_install` / `mc_launch` / `mc_kill` / `mc_logs` / `mc_status`——AI 通过对话操作启动器
+- ✅ **AI 崩溃分析**：`mc_analyze_crash` 读取崩溃报告与日志，交给 LLM 诊断并给修复建议
+- ✅ **AI 游戏助手**：`mc_world_info`（存档时长/死亡）、`mc_mods`（模组清单）、`mc_version_advice`（版本建议）
+- ✅ **双界面**：标签页模式（与 AI 聊天共存，默认）或全屏启动器模式
 - ✅ 游戏日志实时显示、停止游戏、内存/分辨率/Java 路径等设置
 
 ## ⚖️ 法律合规（请先阅读）
@@ -115,7 +121,7 @@ cd <你的profile目录> && pnpm install
 
 | 对象 | 访问内容 | 说明 |
 | --- | --- | --- |
-| 文件 `~/.minecraft/` | 读 + 写 | 版本文件、libraries、assets、存档（与官方启动器同结构） |
+| 文件 `~/.minecraft/` | 读 + 写 | 版本文件、libraries、assets、存档（与官方启动器同结构）；`mc_world_info` 读 `saves/*/stats/*.json`，`mc_mods` 读 `mods/*.jar` 元数据，`mc_analyze_crash` 读 `crash-reports/` 与 `logs/latest.log` |
 | 文件 `~/.dsh-mc/` | 写（权限 600） | `settings.json`（配置）、`account.json`（登录 token） |
 | 网络：`launchermeta.mojang.com`、`piston-meta.mojang.com`、`resources.download.minecraft.net` | 只读 | 版本清单与游戏文件下载（Mojang 官方源） |
 | 网络：`login.microsoftonline.com`、`user.auth.xboxlive.com`、`xsts.auth.xboxlive.com`、`api.minecraftservices.com` | 只读 | Microsoft 设备码登录链 |
@@ -131,6 +137,7 @@ cd <你的profile目录> && pnpm install
 | `memoryMb` | JVM 堆内存 | `2048` |
 | `clientId` | 你自己的 Azure 应用 ID（登录必需） | 空 |
 | `width` / `height` | 游戏窗口分辨率 | 854×480 |
+| `uiMode` | 界面模式：`tab`（标签页，推荐）/ `fullscreen`（全屏） | `tab` |
 
 设置保存在 `~/.dsh-mc/settings.json`，账号保存在 `~/.dsh-mc/account.json`（权限 600）。
 
@@ -149,14 +156,18 @@ dsh-mc-launcher/
 ## 🛠️ 架构
 
 ```
-浏览器（启动器 UI，占据 root slot）
+DSH 会话（AI 聊天，可调用 mc_* 工具）
+   │  mc_list / mc_install / mc_launch / mc_analyze_crash / mc_world_info / mc_mods ...
+   ▼
+浏览器（Minecraft 标签页 或 全屏启动器 UI）
    │  fetch /api/mc/*（同源 HTTP）
    ▼
 DSH 宿主进程（dsh-mc-launcher Host 半）
    ├─ Mojang 官方 API（version manifest / version json / assets）
    ├─ Microsoft OAuth2 设备码登录链（XBL → XSTS → Minecraft services）
    ├─ 并发下载 + natives 解压（adm-zip / unzip）
-   └─ spawn Java 游戏进程，日志环形缓冲
+   ├─ spawn Java 游戏进程，日志环形缓冲
+   └─ 游戏数据只读分析（crash-reports / saves stats / mods 元数据）
 ```
 
 ## ❓ 常见问题
@@ -164,6 +175,8 @@ DSH 宿主进程（dsh-mc-launcher Host 半）
 - **Q：Sign in 报 "no Azure client id configured"？** A：按上文"注册自己的 Azure client id"操作后填入设置。
 - **Q：登录报 `AADSTS700016`？** A：说明该 client id 在你的微软目录中不存在——请使用自己注册的 client id。
 - **Q：游戏打不开？** A：查看底部控制台日志；确认已登录（未登录会提示）、Java 版本满足所选版本要求（如 1.21+ 需要 Java 21+）。
+- **Q：打开后是普通 DSH 聊天界面，启动器在哪？** A：默认是**标签页模式**——先开始一个会话，顶部会出现 "Minecraft" 标签，点击即打开启动器；你也可以在聊天里直接用 `mc_*` 工具操作。想全屏可在 设置 → Interface mode 切换为 Fullscreen（重启生效）。
+- **Q：怎么让 AI 帮我装/启动游戏？** A：在聊天里直接说，例如"帮我安装 1.21.11 并启动"——agent 会调用 `mc_list_versions` / `mc_install` / `mc_launch` 等工具完成。崩溃了也可以说"游戏起不来了"，它会用 `mc_analyze_crash` 分析崩溃报告。
 - **Q：可以离线/免账号玩吗？** A：**不可以**。本项目不提供离线模式——按 Mojang EULA，游玩必须以合法购买的账号登录。
 
 ## 🧪 开发与测试（Development）

@@ -21,6 +21,7 @@ import path from 'node:path'
 import os from 'node:os'
 import { spawn, execFile } from 'node:child_process'
 import { Readable } from 'node:stream'
+import { defineTool } from '@deepseek-ai/dsh-tools'
 
 let AdmZip = null
 try {
@@ -48,7 +49,7 @@ function extractZip(zipPath, destDir) {
 }
 
 export const name = 'dsh-mc-launcher'
-export const inject = ['webServer']
+export const inject = ['webServer', 'tools']
 
 // ---------------------------------------------------------------------------
 // paths & persistence
@@ -69,6 +70,7 @@ const DEFAULT_SETTINGS = {
   height: null,
   fullscreen: false,
   eulaAccepted: false,
+  uiMode: 'tab', // 'tab' = a Minecraft tab inside the DSH chat UI; 'fullscreen' = replace the whole page
 }
 
 // ---------------------------------------------------------------------------
@@ -929,7 +931,7 @@ async function route(req, res) {
       case 'settings': {
         const body = await readBody(req)
         const patch = {}
-        for (const key of ['gameDir', 'javaPath', 'memoryMb', 'clientId', 'width', 'height', 'fullscreen', 'eulaAccepted']) {
+        for (const key of ['gameDir', 'javaPath', 'memoryMb', 'clientId', 'width', 'height', 'fullscreen', 'eulaAccepted', 'uiMode']) {
           if (body[key] !== undefined) patch[key] = body[key]
         }
         store.settings = { ...store.settings, ...patch }
@@ -958,6 +960,119 @@ async function route(req, res) {
 }
 
 // ---------------------------------------------------------------------------
+// game analysis helpers (agent tools)
+// ---------------------------------------------------------------------------
+
+function readCrashReport() {
+  const gameDir = MC_DIR()
+  const crashDir = path.join(gameDir, 'crash-reports')
+  let crash = null
+  try {
+    const files = fs.readdirSync(crashDir).filter((f) => f.endsWith('.txt'))
+    if (files.length) {
+      files.sort()
+      const latest = path.join(crashDir, files[files.length - 1])
+      crash = fs.readFileSync(latest, 'utf8').slice(0, 6000)
+    }
+  } catch { /* no crash reports */ }
+
+  let logTail = ''
+  try {
+    const logFile = path.join(gameDir, 'logs', 'latest.log')
+    const raw = fs.readFileSync(logFile, 'utf8')
+    logTail = raw.split('\n').slice(-120).join('\n')
+  } catch { /* no log */ }
+
+  return { crash, logTail, recentLauncherLogs: store.game.logs.slice(-60).join('\n') }
+}
+
+function worldInfo() {
+  const savesDir = path.join(MC_DIR(), 'saves')
+  const worlds = []
+  try {
+    for (const name of fs.readdirSync(savesDir)) {
+      const dir = path.join(savesDir, name)
+      if (!fs.statSync(dir).isDirectory()) continue
+      const statsDir = path.join(dir, 'stats')
+      let playTicks = 0
+      let mined = 0
+      let deaths = 0
+      try {
+        for (const f of fs.readdirSync(statsDir)) {
+          if (!f.endsWith('.json')) continue
+          const s = JSON.parse(fs.readFileSync(path.join(statsDir, f), 'utf8'))
+          const m = s.stats?.['minecraft:custom'] || {}
+          playTicks = Math.max(playTicks, m['minecraft:play_one_minute'] || 0)
+          mined = Math.max(mined, m['minecraft:mined'] || 0)
+          deaths = Math.max(deaths, m['minecraft:deaths'] || 0)
+        }
+      } catch { /* no stats */ }
+      let lastPlayed = ''
+      try { lastPlayed = fs.statSync(dir).mtime.toISOString() } catch { /* ignore */ }
+      worlds.push({
+        name,
+        playHours: +(playTicks / 20 / 3600).toFixed(1),
+        deaths,
+        lastPlayed,
+      })
+    }
+  } catch { /* no saves */ }
+  return worlds
+}
+
+function modsList() {
+  const modsDir = path.join(MC_DIR(), 'mods')
+  const mods = []
+  try {
+    for (const f of fs.readdirSync(modsDir)) {
+      if (!f.endsWith('.jar')) continue
+      const jarPath = path.join(modsDir, f)
+      let meta = null
+      if (AdmZip) {
+        try {
+          const zip = new AdmZip(jarPath)
+          for (const candidate of ['fabric.mod.json', 'META-INF/mods.toml', 'mcmod.info']) {
+            const entry = zip.getEntry(candidate)
+            if (entry) {
+              const raw = entry.getData().toString('utf8')
+              if (candidate === 'fabric.mod.json') {
+                const j = JSON.parse(raw)
+                meta = { name: j.name || f, version: j.version || '', loader: 'fabric' }
+              } else if (candidate === 'META-INF/mods.toml') {
+                const m = raw.match(/modId\s*=\s*"([^"]+)"/)
+                const v = raw.match(/version\s*=\s*"([^"]+)"/)
+                meta = { name: m ? m[1] : f, version: v ? v[1] : '', loader: 'forge' }
+              }
+              break
+            }
+          }
+        } catch { /* unreadable jar */ }
+      }
+      mods.push({ file: f, ...(meta || { name: f.replace(/\.jar$/, ''), version: '', loader: 'unknown' }) })
+    }
+  } catch { /* no mods dir */ }
+  return mods
+}
+
+function versionAdvice() {
+  const installed = installedVersions().map((v) => v.id)
+  const manifest = store.manifest
+  const latest = manifest ? manifest.latest : null
+  const installedRelease = installed.find((id) => !/-snapshot|pre|rc/i.test(id))
+  return {
+    installed,
+    latest,
+    suggestion: installedRelease && latest && installedRelease !== latest.release
+      ? `installed ${installedRelease}; latest release is ${latest.release} (upgrade if you want the newest features)`
+      : 'already on the latest release',
+  }
+}
+
+function toolResult(renderText) {
+  return (args, value) => [{ type: 'text', text: typeof renderText === 'string' ? renderText : JSON.stringify(value, null, 2) }]
+}
+
+// ---------------------------------------------------------------------------
 // apply
 // ---------------------------------------------------------------------------
 
@@ -973,4 +1088,145 @@ export function apply(ctx) {
     handler: route,
   })
   ctx.effect(() => disposeRoute)
+
+  // ---- agent tools: bring the launcher into DSH conversations ----
+  const tools = ctx.tools
+
+  tools.register(defineTool({
+    name: 'mc_list_versions',
+    description: 'List Minecraft versions: locally installed ones plus the latest release/snapshot from Mojang. Use to see what is available or already installed.',
+    parameters: {},
+    output: { schema: { type: 'object', additionalProperties: false, properties: {} }, render: toolResult() },
+    async execute() {
+      const manifest = await getManifest()
+      const installed = installedVersions()
+      return { installed, latest: manifest.latest, count: manifest.versions.length }
+    },
+  }))
+
+  tools.register(defineTool({
+    name: 'mc_install',
+    description: 'Install a Minecraft version (downloads client jar, libraries, and assets from Mojang official servers). Returns immediately; track progress with mc_status.',
+    parameters: {
+      id: { type: 'string', required: true, description: 'Minecraft version id, e.g. "1.21.11" (see mc_list_versions)' },
+    },
+    output: { schema: { type: 'object', additionalProperties: false, properties: {} }, render: toolResult() },
+    async execute(args) {
+      if (store.downloadBusy) return { ok: false, error: 'another install is running' }
+      installVersion(args.id)
+      return { ok: true, id: args.id, note: 'installation started; poll mc_status for progress' }
+    },
+  }))
+
+  tools.register(defineTool({
+    name: 'mc_launch',
+    description: 'Launch an installed Minecraft version. Requires the user to be signed in with a Microsoft account first.',
+    parameters: {
+      id: { type: 'string', description: 'Version id; defaults to the selected one' },
+    },
+    output: { schema: { type: 'object', additionalProperties: false, properties: {} }, render: toolResult() },
+    async execute(args) {
+      const id = args.id || store.selected
+      if (!id) return { ok: false, error: 'no version selected' }
+      if (store.game.running) return { ok: false, error: 'game already running' }
+      if (!store.account) return { ok: false, error: 'not signed in — playing Minecraft requires a valid, legitimately purchased account' }
+      const java = await detectJava()
+      store.javaInfo = java
+      if (!java) return { ok: false, error: 'no Java runtime found' }
+      const r = launch(id, store.account)
+      return { ok: true, pid: r.pid, id }
+    },
+  }))
+
+  tools.register(defineTool({
+    name: 'mc_kill',
+    description: 'Stop the running Minecraft game process (SIGTERM).',
+    parameters: {},
+    output: { schema: { type: 'object', additionalProperties: false, properties: {} }, render: toolResult() },
+    async execute() {
+      if (store.game.pid) {
+        try { process.kill(store.game.pid) } catch { /* gone */ }
+        store.game.running = false
+        return { ok: true }
+      }
+      return { ok: false, error: 'game not running' }
+    },
+  }))
+
+  tools.register(defineTool({
+    name: 'mc_logs',
+    description: 'Read recent launcher/game logs from the ring buffer. Useful for diagnosing launch or runtime problems.',
+    parameters: {
+      lines: { type: 'number', description: 'How many recent lines to return (default 50, max 300)' },
+    },
+    output: { schema: { type: 'object', additionalProperties: false, properties: {} }, render: toolResult() },
+    async execute(args) {
+      const n = Math.min(300, Math.max(1, Number(args.lines) || 50))
+      return { lines: store.game.logs.slice(-n) }
+    },
+  }))
+
+  tools.register(defineTool({
+    name: 'mc_status',
+    description: 'Launcher status: account, selected version, Java runtime, active download progress, and running game state.',
+    parameters: {},
+    output: { schema: { type: 'object', additionalProperties: false, properties: {} }, render: toolResult() },
+    async execute() {
+      const java = await detectJava()
+      store.javaInfo = java
+      return {
+        account: store.account ? { name: store.account.name, uuid: store.account.uuid } : null,
+        selected: store.selected,
+        java: java ? java.version : null,
+        download: store.download ? { version: store.download.version, stage: store.download.stage, filesDone: store.download.filesDone, filesTotal: store.download.filesTotal, current: store.download.current && store.download.current.name, error: store.download.error } : null,
+        game: { running: store.game.running, exitCode: store.game.exitCode },
+        settings: { gameDir: MC_DIR(), memoryMb: store.settings.memoryMb },
+      }
+    },
+  }))
+
+  tools.register(defineTool({
+    name: 'mc_analyze_crash',
+    description: 'Read the latest Minecraft crash report and recent game log so the model can diagnose a crash. Returns raw text for analysis.',
+    parameters: {},
+    output: { schema: { type: 'object', additionalProperties: false, properties: {} }, render: toolResult() },
+    async execute() {
+      const data = readCrashReport()
+      if (!data.crash && !data.logTail && !data.recentLauncherLogs) {
+        return { hasCrash: false, note: 'no crash reports or logs found' }
+      }
+      return { hasCrash: !!data.crash, ...data }
+    },
+  }))
+
+  tools.register(defineTool({
+    name: 'mc_world_info',
+    description: 'List local Minecraft worlds (saves) with play time and deaths, read from each world\'s stats files.',
+    parameters: {},
+    output: { schema: { type: 'object', additionalProperties: false, properties: {} }, render: toolResult() },
+    async execute() {
+      return { worlds: worldInfo() }
+    },
+  }))
+
+  tools.register(defineTool({
+    name: 'mc_mods',
+    description: 'List installed mods (mods/ directory) with their loader and version, parsed from fabric.mod.json / mods.toml metadata.',
+    parameters: {},
+    output: { schema: { type: 'object', additionalProperties: false, properties: {} }, render: toolResult() },
+    async execute() {
+      return { mods: modsList() }
+    },
+  }))
+
+  tools.register(defineTool({
+    name: 'mc_version_advice',
+    description: 'Suggest a Minecraft version: compare installed versions against the latest release from Mojang.',
+    parameters: {},
+    output: { schema: { type: 'object', additionalProperties: false, properties: {} }, render: toolResult() },
+    async execute() {
+      await getManifest()
+      return versionAdvice()
+    },
+  }))
 }
