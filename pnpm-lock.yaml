@@ -23,6 +23,9 @@ importers:
       mineflayer-pathfinder:
         specifier: ^2.4.5
         version: 2.4.5
+      vec3:
+        specifier: ^0.2.0
+        version: 0.2.0
 
 packages:
 

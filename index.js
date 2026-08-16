@@ -1207,7 +1207,7 @@ let bot = null
 let _mf = null, _pf = null, _Vec3 = null
 
 async function loadBotLibs() {
-  if (!_mf) {
+  if (!_mf || !_pf || !_Vec3) {
     _mf = await import('mineflayer')
     const vec3mod = await import('vec3')
     _Vec3 = vec3mod.default || vec3mod
@@ -1335,6 +1335,41 @@ async function botChat(msg) {
   if (!b) return { ok: false, error: 'bot not connected' }
   b.chat(String(msg))
   return { ok: true }
+}
+
+// Run a sequence of bot actions back-to-back with no LLM pauses between
+// steps — this is what makes the bot move smoothly like a real player.
+async function botRunScript(actions) {
+  const b = botReq()
+  if (!b) return { ok: false, error: 'bot not connected — call mc_bot_connect first' }
+  if (!Array.isArray(actions) || !actions.length) return { ok: false, error: 'actions must be a non-empty array' }
+  const results = []
+  for (let i = 0; i < actions.length; i++) {
+    const a = actions[i]
+    let r
+    try {
+      switch (a.type) {
+        case 'move': r = await botMove(a.x, a.y, a.z); break
+        case 'dig': r = await botDig(a.x, a.y, a.z); break
+        case 'place': r = await botPlace(a.x, a.y, a.z); break
+        case 'look': r = await botLook(a.yaw, a.pitch); break
+        case 'equip': r = await botEquip(a.name); break
+        case 'chat': r = await botChat(a.message || a.text); break
+        case 'jump': b.setControlState('jump', true); await sleep(120); b.setControlState('jump', false); r = { ok: true }; break
+        case 'wait': await sleep(Number(a.ms) || 500); r = { ok: true }; break
+        default: r = { ok: false, error: `unknown action type "${a.type}"` }
+      }
+    } catch (e) {
+      r = { ok: false, error: e.message }
+    }
+    results.push({ i, type: a.type, ...r })
+    if (r.ok === false && a.continue !== true) {
+      results.push({ stopped: true, at: i, reason: r.error })
+      break
+    }
+  }
+  const done = results.filter((r) => r.ok === true).length
+  return { ok: true, done, total: actions.length, results }
 }
 
 // Automatically open the single-player world to LAN via keyboard navigation:
@@ -1863,6 +1898,20 @@ export function apply(ctx) {
     output: { schema: { type: 'object', additionalProperties: true, properties: {} }, render: toolResult() },
     async execute() {
       return openLan()
+    },
+  }))
+
+  tools.register(defineTool({
+    name: 'mc_bot_script',
+    description: 'Run a whole sequence of bot actions back-to-back with NO pauses between steps — this makes the bot move smoothly like a real player. PREFER this over calling mc_bot_move/dig/place one at a time. Pass a JSON array of actions: [{"type":"move","x":..,"y":..,"z":..},{"type":"dig","x":..,"y":..,"z":..},{"type":"place",...},{"type":"look","yaw":..,"pitch":..},{"type":"equip","name":".."},{"type":"chat","message":".."},{"type":"jump"},{"type":"wait","ms":500}]. Plan 10-30 actions at once for smooth, human-like behavior.',
+    parameters: {
+      actions: { type: 'string', required: true, description: 'JSON-encoded array of action objects' },
+    },
+    output: { schema: { type: 'object', additionalProperties: true, properties: {} }, render: toolResult() },
+    async execute(args) {
+      let actions
+      try { actions = JSON.parse(args.actions) } catch { return { ok: false, error: 'actions must be a JSON-encoded array' } }
+      return botRunScript(actions)
     },
   }))
 }
