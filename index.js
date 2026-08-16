@@ -77,6 +77,7 @@ const DEFAULT_SETTINGS = {
   theme: { preset: 'default', accent: '' }, // 'default' | 'light' | 'ocean' | 'end' | 'lava'; accent overrides the primary color
   dashscopeKey: '', // optional: override the DASHSCOPE_API_KEY from ~/.bashrc for mc_see
   onboarded: false, // first-run welcome/guide shown until accepted
+  autoReconnect: true, // auto-connect the bot + start autonomy when the game opens to LAN
 }
 
 // ---------------------------------------------------------------------------
@@ -1040,7 +1041,7 @@ async function route(req, res) {
       case 'settings': {
         const body = await readBody(req)
         const patch = {}
-        for (const key of ['gameDir', 'javaPath', 'memoryMb', 'clientId', 'width', 'height', 'fullscreen', 'eulaAccepted', 'uiMode', 'showTab', 'theme', 'dashscopeKey', 'onboarded']) {
+        for (const key of ['gameDir', 'javaPath', 'memoryMb', 'clientId', 'width', 'height', 'fullscreen', 'eulaAccepted', 'uiMode', 'showTab', 'theme', 'dashscopeKey', 'onboarded', 'autoReconnect']) {
           if (body[key] !== undefined) patch[key] = body[key]
         }
         store.settings = { ...store.settings, ...patch }
@@ -1626,7 +1627,7 @@ function userMessage(text) {
 }
 
 async function llmChat(system, userText, maxTokens = 200) {
-  if (!autonomyCtx || !autonomyCtx.llm) return null
+  if (!autonomyCtx || !autonomyCtx.llm) { pushLog('[llm] no ctx/llm service'); return null }
   try {
     const sel = autonomyCtx.agentDefaultModel.currentSelection()
     let text = ''
@@ -1638,9 +1639,12 @@ async function llmChat(system, userText, maxTokens = 200) {
       maxTokens,
     })) {
       if (chunk.type === 'text-delta') text += chunk.text
+      else if (chunk.type === 'error' || chunk.type === 'aborted') { pushLog('[llm] chunk error: ' + JSON.stringify(chunk).slice(0, 200)); break }
     }
-    return text.trim()
+    if (!text) pushLog('[llm] empty response')
+    return text.trim() || null
   } catch (e) {
+    pushLog('[llm] error: ' + e.message)
     return null
   }
 }
@@ -1907,6 +1911,27 @@ export function apply(ctx) {
     text: () => formatLiveState(),
   })
   ctx.effect(() => disposeLiveContext)
+
+  // ---- auto-reconnect: when the game opens to LAN, join the bot and start autonomy ----
+  let _reconnecting = false
+  const autoReconnectTimer = setInterval(async () => {
+    if (!store.settings.autoReconnect || _reconnecting) return
+    if (!store.game.running || bot) return
+    const port = lanPortFromLogs()
+    if (!port) return
+    _reconnecting = true
+    try {
+      const r = await botConnect(port)
+      if (r.ok) {
+        pushLog(`[auto] 自动连接 bot 到端口 ${port}`)
+        startAutonomy()
+      }
+    } catch (e) {
+      pushLog(`[auto] 自动连接失败: ${e.message}`)
+    }
+    _reconnecting = false
+  }, 15000)
+  ctx.effect(() => () => clearInterval(autoReconnectTimer))
 
   // ---- agent tools: bring the launcher into DSH conversations ----
   const tools = ctx.tools
