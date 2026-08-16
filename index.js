@@ -1213,6 +1213,102 @@ let bot = null
 let _mf = null, _pf = null, _Vec3 = null, _goals = null
 let autonomyCtx = null  // the apply ctx, for social/decision LLM calls
 
+// ---- shared bot service: lets companion plugins (e.g. dsh-mc-companion) reuse
+// the same bot connection and take over the social layer without duplicating it ----
+const botBus = {
+  _l: {},
+  on(ev, fn) { (this._l[ev] ||= new Set()).add(fn); return () => { const s = this._l[ev]; if (s) s.delete(fn) } },
+  emit(ev, ...args) { for (const fn of [...(this._l[ev] || [])]) { try { fn(...args) } catch { /* ignore */ } } },
+}
+let chatResponder = null // (username, message) => boolean; true = companion handled it
+
+// ---- follow: the bot walks alongside the player (used by the companion) ----
+const follow = { active: false, target: null, distance: 3, timer: null, stuckTicks: 0, lastKey: '' }
+
+function nearestPlayer() {
+  const b = bot
+  if (!b || !b.entity || !b.entity.position) return null
+  let best = null
+  let bestD = Infinity
+  try {
+    for (const [name, p] of Object.entries(b.players || {})) {
+      if (name === b.username) continue
+      const e = (p && p.entity) || p
+      if (!e || !e.position) continue
+      const d = e.position.distanceTo(b.entity.position)
+      if (d < bestD) { bestD = d; best = { name, x: Math.round(e.position.x), y: Math.round(e.position.y), z: Math.round(e.position.z), dist: Math.round(d) } }
+    }
+  } catch { /* ignore */ }
+  return best
+}
+
+function playerPos(name) {
+  const b = bot
+  if (!b || !name) return null
+  try {
+    const p = b.players && b.players[name]
+    if (!p) return null
+    return (p.entity && p.entity.position) || p.position || null
+  } catch { return null }
+}
+
+function startFollow(playerName, distance) {
+  if (!bot) return { ok: false, error: 'bot not connected' }
+  stopFollow()
+  stopAutonomy()
+  follow.active = true
+  follow.target = playerName || null
+  follow.distance = Number(distance) || 3
+  follow.stuckTicks = 0
+  follow.lastKey = ''
+  follow.timer = setInterval(followTick, 250)
+  pushLog(`[follow] 跟随 ${playerName || '最近的玩家'}（距离 ${follow.distance} 格）`)
+  return { ok: true }
+}
+
+function stopFollow() {
+  follow.active = false
+  if (follow.timer) { clearInterval(follow.timer); follow.timer = null }
+  if (bot) {
+    try { bot.setControlState('forward', false) } catch { /* ignore */ }
+    try { bot.setControlState('sprint', false) } catch { /* ignore */ }
+    try { bot.setControlState('jump', false) } catch { /* ignore */ }
+  }
+  return { ok: true }
+}
+
+function followTick() {
+  if (!follow.active || !bot || !bot.entity) return
+  const b = bot
+  let target = follow.target ? playerPos(follow.target) : null
+  if (!target) {
+    const n = nearestPlayer()
+    if (n) target = playerPos(n.name)
+  }
+  if (!target) { try { b.setControlState('forward', false) } catch { /* ignore */ } return }
+  const me = b.entity.position
+  const dx = target.x - me.x
+  const dz = target.z - me.z
+  const dist = Math.hypot(dx, dz)
+  const yaw = Math.atan2(-dx, -dz)
+  if (dist > follow.distance + 1) {
+    try { b.look(yaw, 0, true) } catch { /* ignore */ }
+    b.setControlState('forward', true)
+    b.setControlState('sprint', dist > 14)
+    const key = `${Math.round(me.x)},${Math.round(me.y)},${Math.round(me.z)}`
+    if (follow.lastKey === key) { follow.stuckTicks++ } else { follow.stuckTicks = 0; follow.lastKey = key }
+    if (follow.stuckTicks >= 8) {
+      follow.stuckTicks = 0
+      b.setControlState('jump', true)
+      setTimeout(() => { try { b.setControlState('jump', false) } catch { /* ignore */ } }, 220)
+    }
+  } else {
+    try { b.setControlState('forward', false) } catch { /* ignore */ }
+    try { b.setControlState('sprint', false) } catch { /* ignore */ }
+    try { b.look(yaw, 0, true) } catch { /* ignore */ }
+  }
+}
+
 async function loadBotLibs() {
   if (!_mf || !_pf || !_Vec3) {
     _mf = await import('mineflayer')
@@ -1254,15 +1350,25 @@ async function botConnect(port, username) {
   b.loadPlugin(pathfinder)
   b.pathfinder.setMovements(new Movements(b))
   b.on('kicked', (r) => { pushLog(`[bot] kicked: ${r}`) })
-  b.on('end', () => { if (bot === b) { bot = null; stopAutonomy() } })
+  b.on('end', () => { if (bot === b) { bot = null; stopAutonomy(); stopFollow() } })
   b.on('chat', (username, message) => {
     // ignore the bot's own echoed chat (username shows as "Bot"/"DSH-Bot"),
     // and any other bot-named entity, so the bot never replies to itself
     if (username === b.username || /bot/i.test(username)) return
     pushLog(`[social] ${username}: ${message}`)
+    botBus.emit('chat', username, message)
+    // if a companion plugin registered a responder, let it own the social layer
+    if (chatResponder && chatResponder(username, message)) return
     onPlayerChat(username, message)
   })
+  // forward lifecycle events to companion plugins through the shared bus
+  // (spawn is emitted after `bot = b` below, so consumers see the live bot)
+  b.on('playerJoined', (player) => botBus.emit('playerJoined', player))
+  b.on('playerLeft', (player) => botBus.emit('playerLeft', player))
+  b.on('death', () => botBus.emit('death', b))
+  b.on('end', () => botBus.emit('end', b))
   bot = b
+  botBus.emit('spawn', b)
   return { ok: true, username: b.username, port: p }
 }
 
@@ -1477,6 +1583,37 @@ async function botRunScript(actions) {
   }
   const done = results.filter((r) => r.ok === true).length
   return { ok: true, done, total: actions.length, results }
+}
+
+// ---- shared bot service: one connection, many consumers ----
+function mcBotService() {
+  return {
+    get connected() { return !!bot },
+    get bot() { return bot },
+    connect: (port, username) => botConnect(port, username),
+    disconnect: () => { if (bot) { try { bot.end() } catch { /* ignore */ } bot = null } return { ok: true } },
+    state: () => botState(),
+    players: () => mapState(),
+    nearestPlayer: () => nearestPlayer(),
+    chat: (msg) => botChat(msg),
+    look: (yaw, pitch) => botLook(yaw, pitch),
+    moveTo: (x, y, z) => botMove(x, y, z),
+    follow: (playerName, distance) => startFollow(playerName, distance),
+    stopFollow: () => stopFollow(),
+    followStatus: () => ({ active: follow.active, target: follow.target, distance: follow.distance }),
+    stopAutonomy: () => stopAutonomy(),
+    startAutonomy: (task) => {
+      const r = startAutonomy()
+      if (task) {
+        const m = String(task).match(/^(gather|explore)(?:\s+(\w+))?/)
+        if (m) autonomy.task = { type: m[1], target: m[1] === 'gather' ? (m[2] || 'oak_log') : undefined, count: 8, done: false }
+      }
+      return r
+    },
+    autonomyStatus: () => autonomyStatus(),
+    on: (ev, fn) => botBus.on(ev, fn),
+    setChatResponder: (fn) => { chatResponder = fn; return () => { if (chatResponder === fn) chatResponder = null } },
+  }
 }
 
 // ---- autonomy engine: LLM-free reflective loop for smooth, continuous play ----
@@ -2045,6 +2182,8 @@ export function apply(ctx) {
   loadSettings()
   ensureDir(DATA_DIR)
   loadGoals()
+  ctx.provide('mcBot', mcBotService())
+  pushLog('[service] mcBot shared service registered (companion plugins can reuse this bot)')
   logState('boot', `launcher backend ready (gameDir=${MC_DIR()})`)
 
   const webServer = ctx.webServer
@@ -2124,7 +2263,9 @@ export function apply(ctx) {
       const r = await botConnect(port)
       if (r.ok) {
         pushLog(`[auto] 自动连接 bot 到端口 ${port}`)
-        startAutonomy()
+        // when a companion plugin owns the social layer, let it decide what the
+        // bot does (follow the player etc.) instead of auto-starting autonomy
+        if (!chatResponder) startAutonomy()
       }
     } catch (e) {
       _lastFail = Date.now()
