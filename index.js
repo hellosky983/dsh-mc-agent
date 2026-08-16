@@ -1059,6 +1059,10 @@ async function route(req, res) {
         json(res, 200, { gameDir: MC_DIR(), dataDir: DATA_DIR })
         break
       }
+      case 'map': {
+        json(res, 200, mapState())
+        break
+      }
       default:
         json(res, 404, { error: `unknown action ${action}` })
     }
@@ -1302,6 +1306,36 @@ function botState() {
   }
 }
 
+// Live positions of the bot and every nearby player, for the map panel.
+function mapState() {
+  const b = botReq()
+  if (!b) return { ok: false, error: 'bot not connected' }
+  const players = []
+  if (b.entity && b.entity.position) {
+    players.push({ name: b.username, x: Math.round(b.entity.position.x), z: Math.round(b.entity.position.z), yaw: b.entity.yaw, isBot: true })
+  }
+  try {
+    const map = b.players || {}
+    for (const [name, p] of Object.entries(map)) {
+      if (name === b.username) continue
+      const e = p.entity || p
+      if (e && e.position) players.push({ name, x: Math.round(e.position.x), z: Math.round(e.position.z), yaw: e.yaw, isBot: false })
+    }
+  } catch { /* ignore */ }
+  // terrain snapshot (ground blocks around the bot) for a rough map
+  const ground = []
+  if (b.entity && b.entity.position && _Vec3) {
+    const p = b.entity.position
+    try {
+      for (let dx = -8; dx <= 8; dx++) for (let dz = -8; dz <= 8; dz++) {
+        const bl = b.blockAt(new _Vec3(Math.floor(p.x) + dx, Math.floor(p.y) - 1, Math.floor(p.z) + dz))
+        if (bl && bl.name !== 'air' && bl.name !== 'void_air') ground.push({ dx, dz, name: bl.name })
+      }
+    } catch { /* ignore */ }
+  }
+  return { ok: true, players, ground, botPos: b.entity ? { x: Math.round(b.entity.position.x), z: Math.round(b.entity.position.z) } : null }
+}
+
 async function botMove(x, y, z) {
   const b = botReq()
   if (!b) return { ok: false, error: 'bot not connected' }
@@ -1410,6 +1444,7 @@ const autonomy = {
   taskIndex: 0,
   _busy: false,
   _timer: null,
+  _moveTarget: null,    // current pathfinder goal key, to avoid re-planning every tick
 }
 
 // Self-chosen survival goal cycle: the bot picks its own next goal without
@@ -1522,19 +1557,30 @@ async function runTask(b) {
 }
 
 async function gatherTask(b, t) {
+  // don't re-plan while already pathing to a target (this was the "bot won't move" bug)
+  if (b.pathfinder.isMoving && b.pathfinder.isMoving()) return
   let block = null
   try {
     block = await b.findBlock({ matching: (blk) => blk.name === t.target, maxDistance: 24, count: 1 })
   } catch { return }
-  if (!block) { t.done = true; return }
+  if (!block) { t.done = true; pushLog(`[autonomy] 附近没有 ${t.target}，切换目标`); return }
   const dist = block.position.distanceTo(b.entity.position)
-  if (dist > 4) {
-    b.pathfinder.setGoal(new _goals.GoalNear(block.position.x, block.position.y, block.position.z, 2))
+  if (dist > 3) {
+    const key = `${block.position.x},${block.position.y},${block.position.z}`
+    if (autonomy._moveTarget !== key) {
+      autonomy._moveTarget = key
+      b.pathfinder.setGoal(new _goals.GoalNear(block.position.x, block.position.y, block.position.z, 2))
+      pushLog(`[autonomy] 寻路到 ${t.target}@(${block.position.x},${block.position.y},${block.position.z})，距离 ${Math.round(dist)}`)
+    }
   } else {
+    autonomy._moveTarget = null
     try {
       await b.dig(block)
       autonomy.stats.blocksMined++
-    } catch { /* ignore */ }
+      pushLog(`[autonomy] 挖了 ${block.name}`)
+    } catch (e) {
+      pushLog(`[autonomy] 挖掘失败: ${e.message}`)
+    }
   }
 }
 
@@ -1582,6 +1628,22 @@ async function llmChat(system, userText, maxTokens = 200) {
 }
 
 let _replying = false
+
+// instant rule-based replies for common greetings so chat feels snappy
+const QUICK_REPLIES = [
+  { re: /^(你好|您好|在吗|在不在|hi|hello|hey|嗨|哈喽)/i, replies: ['我在呢！', '你好呀～', '在的，怎么啦？', '嗨！我在'] },
+  { re: /(干嘛|做什么|忙什么|在干啥)/, replies: ['在附近采集资源呢', '正在砍树，攒点木头', '四处逛逛看看有没有矿'] },
+  { re: /(谢谢|thanks|thank you|谢了|多谢)/i, replies: ['不客气！', '应该的～', '小事儿！'] },
+  { re: /(在哪|位置|坐标)/, replies: ['我就在你附近，看地图上的蓝点'] },
+]
+
+function quickReply(message) {
+  for (const q of QUICK_REPLIES) {
+    if (q.re.test(message)) return q.replies[Math.floor(Math.random() * q.replies.length)]
+  }
+  return null
+}
+
 async function onPlayerChat(username, message) {
   if (_replying) return
   if (message.startsWith('/')) return // ignore commands
@@ -1589,6 +1651,12 @@ async function onPlayerChat(username, message) {
   try {
     const b = bot
     if (!b) return
+    const quick = quickReply(message)
+    if (quick) {
+      b.chat(quick)
+      pushLog(`[social] 快速回复 ${username}: ${quick}`)
+      return
+    }
     const p = b.entity && b.entity.position
     const loc = p ? `（我当前在 (${Math.round(p.x)}, ${Math.round(p.y)}, ${Math.round(p.z)})）` : ''
     const reply = await llmChat(SOCIAL_SYSTEM_PROMPT, `玩家 ${username} 说：${message}\n${loc}`, 120)
