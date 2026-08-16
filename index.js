@@ -683,7 +683,7 @@ function msAuthHeaders() {
 }
 
 function xblHeaders() {
-  return { 'Content-Type': 'application/json', Accept: 'application/json', 'x-xbl-contract-version': '3' }
+  return { 'Content-Type': 'application/json', Accept: 'application/json' }
 }
 
 async function xblAuthenticate(accessToken) {
@@ -691,7 +691,7 @@ async function xblAuthenticate(accessToken) {
     method: 'POST',
     headers: xblHeaders(),
     body: JSON.stringify({
-      Properties: { AuthMethod: 'RST', SiteName: 'user.auth.xboxlive.com', RpsTicket: `d=${accessToken}` },
+      Properties: { AuthMethod: 'RPS', SiteName: 'user.auth.xboxlive.com', RpsTicket: `d=${accessToken}` },
       RelyingParty: 'http://auth.xboxlive.com',
       TokenType: 'JWT',
     }),
