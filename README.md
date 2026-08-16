@@ -20,11 +20,15 @@
 - ✅ 一键安装：client jar + libraries（natives 自动解压）+ assets，断点续传（已存在且大小匹配的文件跳过）
 - ✅ 启动游戏：按版本 JSON 组装 Java 命令（自动展开 `${natives_directory}`、`${classpath}` 等占位符）
 - ✅ Java 自动探测：优先使用官方启动器下载的 `~/.minecraft/runtime/**/bin/java`，其次 PATH 中的 `java`
-- ✅ Microsoft 账号登录（OAuth2 设备码流程：device code → XBL → XSTS → Minecraft services → 皮肤档）
+- ✅ Microsoft 账号登录：**浏览器授权码登录（PKCE，自动回调，推荐）** + 设备码登录（备选）
 - ✅ **Agent 工具集**：`mc_list_versions` / `mc_install` / `mc_launch` / `mc_kill` / `mc_logs` / `mc_status`——AI 通过对话操作启动器
 - ✅ **AI 崩溃分析**：`mc_analyze_crash` 读取崩溃报告与日志，交给 LLM 诊断并给修复建议
 - ✅ **AI 游戏助手**：`mc_world_info`（存档时长/死亡）、`mc_mods`（模组清单）、`mc_version_advice`（版本建议）
-- ✅ **双界面**：标签页模式（与 AI 聊天共存，默认）或全屏启动器模式
+- ✅ **AI 自主生存（框架）**：`mc_set_goals` / `mc_goals` / `mc_complete_goal`——AI 根据用户人设自动设立 ≥20 个目标并逐个推进、持久化到磁盘（视觉/键鼠控制留作可插拔接口，需接入视觉模型）
+- ✅ **双界面**：标签页模式（与 AI 聊天共存，默认）或全屏启动器模式；可单独开关"会话中是否显示 Minecraft 标签"
+- ✅ **主题自定义**：5 套预设（森林/石板/海洋/末地/熔岩）+ 自定义强调色，即时生效
+- ✅ **版本选择框**：下拉分组选择（已安装/Release/Snapshot/Old），不再被超长列表占据版面
+- ✅ **登录引导**：未登录时醒目标语横幅 + 点 PLAY 直接唤起登录
 - ✅ 游戏日志实时显示、停止游戏、内存/分辨率/Java 路径等设置
 
 ## ⚖️ 法律合规（请先阅读）
@@ -122,7 +126,7 @@ cd <你的profile目录> && pnpm install
 | 对象 | 访问内容 | 说明 |
 | --- | --- | --- |
 | 文件 `~/.minecraft/` | 读 + 写 | 版本文件、libraries、assets、存档（与官方启动器同结构）；`mc_world_info` 读 `saves/*/stats/*.json`，`mc_mods` 读 `mods/*.jar` 元数据，`mc_analyze_crash` 读 `crash-reports/` 与 `logs/latest.log` |
-| 文件 `~/.dsh-mc/` | 写（权限 600） | `settings.json`（配置）、`account.json`（登录 token） |
+| 文件 `~/.dsh-mc/` | 写（权限 600） | `settings.json`（配置）、`account.json`（登录 token）、`goals.json`（自主模式目标） |
 | 网络：`launchermeta.mojang.com`、`piston-meta.mojang.com`、`resources.download.minecraft.net` | 只读 | 版本清单与游戏文件下载（Mojang 官方源） |
 | 网络：`login.microsoftonline.com`、`user.auth.xboxlive.com`、`xsts.auth.xboxlive.com`、`api.minecraftservices.com` | 只读 | Microsoft 设备码登录链 |
 | 进程 | 启动 Java 子进程 | 游戏本体；可被 Stop 按钮终止 |
@@ -138,6 +142,8 @@ cd <你的profile目录> && pnpm install
 | `clientId` | 你自己的 Azure 应用 ID（登录必需） | 空 |
 | `width` / `height` | 游戏窗口分辨率 | 854×480 |
 | `uiMode` | 界面模式：`tab`（标签页，推荐）/ `fullscreen`（全屏） | `tab` |
+| `showTab` | tab 模式下是否在会话中显示 Minecraft 标签（关则纯工具模式） | `true` |
+| `theme` | 主题：`{preset: default/light/ocean/end/lava, accent: "#hex"}` | 森林 + 默认绿 |
 
 设置保存在 `~/.dsh-mc/settings.json`，账号保存在 `~/.dsh-mc/account.json`（权限 600）。
 

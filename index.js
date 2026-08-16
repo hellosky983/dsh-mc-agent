@@ -19,6 +19,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
+import { createHash, randomBytes } from 'node:crypto'
 import { spawn, execFile } from 'node:child_process'
 import { Readable } from 'node:stream'
 import { defineTool } from '@deepseek-ai/dsh-tools'
@@ -60,6 +61,7 @@ const MC_DIR = () => store.settings.gameDir
 const DATA_DIR = path.join(HOME, '.dsh-mc')
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json')
 const ACCOUNT_FILE = path.join(DATA_DIR, 'account.json')
+const GOALS_FILE = path.join(DATA_DIR, 'goals.json')
 
 const DEFAULT_SETTINGS = {
   gameDir: path.join(HOME, '.minecraft'),
@@ -71,6 +73,8 @@ const DEFAULT_SETTINGS = {
   fullscreen: false,
   eulaAccepted: false,
   uiMode: 'tab', // 'tab' = a Minecraft tab inside the DSH chat UI; 'fullscreen' = replace the whole page
+  showTab: true, // when uiMode is 'tab', whether to show the Minecraft tab in the session
+  theme: { preset: 'default', accent: '' }, // 'default' | 'light' | 'ocean' | 'end' | 'lava'; accent overrides the primary color
 }
 
 // ---------------------------------------------------------------------------
@@ -95,6 +99,8 @@ const store = {
     maxLogs: 1500,
   },
   login: null,              // device-code login session
+  oauth: null,              // PKCE oauth in-flight state { verifier, state }
+  goals: null,              // autonomous play: { persona, goals: [{text, done}], updatedAt }
 }
 
 // ---------------------------------------------------------------------------
@@ -153,6 +159,24 @@ function saveAccount() {
   } else {
     try { fs.unlinkSync(ACCOUNT_FILE) } catch { /* ignore */ }
   }
+}
+
+function loadGoals() {
+  try {
+    const g = JSON.parse(fs.readFileSync(GOALS_FILE, 'utf8'))
+    store.goals = { persona: g.persona || '', goals: Array.isArray(g.goals) ? g.goals : [], updatedAt: g.updatedAt || '' }
+  } catch {
+    store.goals = { persona: '', goals: [], updatedAt: '' }
+  }
+  return store.goals
+}
+
+function saveGoals(g) {
+  g.updatedAt = new Date().toISOString()
+  store.goals = g
+  ensureDir(DATA_DIR)
+  fs.writeFileSync(GOALS_FILE, JSON.stringify(g, null, 2), { mode: 0o600 })
+  return g
 }
 
 function pushLog(line) {
@@ -797,6 +821,79 @@ async function msLoginPoll() {
   return login
 }
 
+async function exchangeMicrosoftToken(accessToken) {
+  const xbl = await xblAuthenticate(accessToken)
+  const xsts = await xstsAuthenticate(xbl.token)
+  const mcToken = await mcLoginWithXbox(xsts.token, xsts.uhs)
+  const profile = await mcProfile(mcToken)
+  const account = { name: profile.name, uuid: profile.id, accessToken: mcToken, type: 'msa', xuid: xsts.uhs }
+  store.account = account
+  saveAccount()
+  logState('login', `signed in as ${profile.name} (${profile.id})`)
+  return account
+}
+
+function pkcePair() {
+  const verifier = randomBytes(48).toString('base64url')
+  const challenge = createHash('sha256').update(verifier).digest('base64url')
+  return { verifier, challenge }
+}
+
+function oauthStart(port) {
+  if (!store.settings.clientId) {
+    throw new Error('no Azure client id configured \u2014 register your own app (see README) and set it in Settings')
+  }
+  const { verifier, challenge } = pkcePair()
+  const state = randomBytes(16).toString('hex')
+  store.oauth = { verifier, state }
+  const redirectUri = `http://127.0.0.1:${port}/api/mc/oauth/callback`
+  const params = new URLSearchParams({
+    client_id: store.settings.clientId,
+    response_type: 'code',
+    redirect_uri: redirectUri,
+    scope: 'XboxLive.signin offline_access',
+    code_challenge: challenge,
+    code_challenge_method: 'S256',
+    state,
+    prompt: 'select_account',
+  })
+  return `https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize?${params.toString()}`
+}
+
+async function oauthCallback(code, state, port) {
+  const oauth = store.oauth
+  if (!oauth || oauth.state !== state) throw new Error('OAuth state mismatch \u2014 please start sign-in again')
+  store.oauth = null
+  const redirectUri = `http://127.0.0.1:${port}/api/mc/oauth/callback`
+  const res = await fetch('https://login.microsoftonline.com/consumers/oauth2/v2.0/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: store.settings.clientId,
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: redirectUri,
+      code_verifier: oauth.verifier,
+    }).toString(),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok || !data.access_token) {
+    throw new Error(data.error_description || data.error || `HTTP ${res.status}`)
+  }
+  return exchangeMicrosoftToken(data.access_token)
+}
+
+function oauthCallbackHtml(ok, message) {
+  const color = ok ? '#4ade80' : '#f87171'
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>DSH Minecraft Launcher \u00b7 Sign in</title></head>
+<body style="margin:0;background:#0d1318;color:#e8e8e8;font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh">
+<div style="text-align:center">
+<div style="font-size:42px;font-weight:900;color:${color}">${ok ? '\u2713 Sign-in complete' : '\u2717 Sign-in failed'}</div>
+<div style="margin-top:14px;font-size:15px;color:#9fb5a6;max-width:420px;line-height:1.6">${message}</div>
+<div style="margin-top:22px;font-size:13px;color:#6f8a78">You can close this tab and return to the launcher.</div>
+</div></body></html>`
+}
+
 // ---------------------------------------------------------------------------
 // http api
 // ---------------------------------------------------------------------------
@@ -931,7 +1028,7 @@ async function route(req, res) {
       case 'settings': {
         const body = await readBody(req)
         const patch = {}
-        for (const key of ['gameDir', 'javaPath', 'memoryMb', 'clientId', 'width', 'height', 'fullscreen', 'eulaAccepted', 'uiMode']) {
+        for (const key of ['gameDir', 'javaPath', 'memoryMb', 'clientId', 'width', 'height', 'fullscreen', 'eulaAccepted', 'uiMode', 'showTab', 'theme']) {
           if (body[key] !== undefined) patch[key] = body[key]
         }
         store.settings = { ...store.settings, ...patch }
@@ -1079,6 +1176,7 @@ function toolResult(renderText) {
 export function apply(ctx) {
   loadSettings()
   ensureDir(DATA_DIR)
+  loadGoals()
   logState('boot', `launcher backend ready (gameDir=${MC_DIR()})`)
 
   const webServer = ctx.webServer
@@ -1088,6 +1186,47 @@ export function apply(ctx) {
     handler: route,
   })
   ctx.effect(() => disposeRoute)
+
+  // OAuth2 PKCE browser sign-in (separate routes: start returns the authorize
+  // URL as JSON; callback handles the redirect and shows a result page).
+  const disposeOauthStart = webServer.register({
+    kind: 'exact',
+    path: '/api/mc/oauth/start',
+    handler: (req, res) => {
+      try {
+        json(res, 200, { authorizeUrl: oauthStart(webServer.port) })
+      } catch (e) {
+        json(res, 400, { error: e.message })
+      }
+    },
+  })
+  const disposeOauthCb = webServer.register({
+    kind: 'exact',
+    path: '/api/mc/oauth/callback',
+    handler: async (req, res) => {
+      const u = new URL(req.url, 'http://localhost')
+      const code = u.searchParams.get('code')
+      const state = u.searchParams.get('state')
+      const err = u.searchParams.get('error_description') || u.searchParams.get('error')
+      let html
+      if (err) {
+        html = oauthCallbackHtml(false, String(err))
+      } else if (!code) {
+        html = oauthCallbackHtml(false, 'No authorization code in callback.')
+      } else {
+        try {
+          const account = await oauthCallback(code, state, webServer.port)
+          html = oauthCallbackHtml(true, `Signed in as ${account.name} (${account.uuid})`)
+        } catch (e) {
+          html = oauthCallbackHtml(false, e.message)
+        }
+      }
+      res.statusCode = 200
+      res.setHeader('Content-Type', 'text/html; charset=utf-8')
+      res.end(html)
+    },
+  })
+  ctx.effect(() => { disposeOauthStart(); disposeOauthCb() })
 
   // ---- agent tools: bring the launcher into DSH conversations ----
   const tools = ctx.tools
@@ -1227,6 +1366,53 @@ export function apply(ctx) {
     async execute() {
       await getManifest()
       return versionAdvice()
+    },
+  }))
+
+  // ---- autonomous play: persona-driven goal planning (visual/keyboard control
+  // is intentionally left as a pluggable seam for a future vision-capable model) ----
+  tools.register(defineTool({
+    name: 'mc_goals',
+    description: 'Read the current autonomous-play goal list for the active persona (see mc_set_goals). Returns the persona and each goal with its done status.',
+    parameters: {},
+    output: { schema: { type: 'object', additionalProperties: false, properties: {} }, render: toolResult() },
+    async execute() {
+      return loadGoals()
+    },
+  }))
+
+  tools.register(defineTool({
+    name: 'mc_set_goals',
+    description: 'Set up autonomous play: store a persona (who the AI is role-playing) and a list of at least 20 concrete, achievable in-game goals. Goals should build on the current game state (use mc_status / mc_world_info / mc_mods first). Persisted to disk; then work through them with mc_goals + mc_complete_goal, re-observing game state between actions.',
+    parameters: {
+      persona: { type: 'string', required: true, description: 'The persona/character the AI role-plays, e.g. "a cautious survivalist who builds a farm" or "an explorer mapping the whole world"' },
+      goals: { type: 'string', required: true, description: 'JSON-encoded array of at least 20 goal strings, e.g. \'["punch a tree and craft a crafting table","mine 64 cobblestone","build a wooden house","..." ]\'' },
+    },
+    output: { schema: { type: 'object', additionalProperties: false, properties: {} }, render: toolResult() },
+    async execute(args) {
+      let goals
+      try { goals = JSON.parse(args.goals) } catch { return { ok: false, error: 'goals must be a JSON-encoded array of strings' } }
+      if (!Array.isArray(goals) || goals.length < 20) return { ok: false, error: `need at least 20 goals, got ${Array.isArray(goals) ? goals.length : 'non-array'}` }
+      const g = saveGoals({ persona: args.persona, goals: goals.map((t) => ({ text: String(t), done: false })) })
+      return { ok: true, count: g.goals.length, persona: g.persona }
+    },
+  }))
+
+  tools.register(defineTool({
+    name: 'mc_complete_goal',
+    description: 'Mark one goal in the autonomous-play list as complete (or un-complete) by index. Use after verifying the goal was actually achieved.',
+    parameters: {
+      index: { type: 'number', required: true, description: '0-based index of the goal in the list (see mc_goals)' },
+      done: { type: 'boolean', description: 'true to mark done (default), false to mark not done' },
+    },
+    output: { schema: { type: 'object', additionalProperties: false, properties: {} }, render: toolResult() },
+    async execute(args) {
+      const g = loadGoals()
+      const i = Number(args.index)
+      if (!g.goals[i]) return { ok: false, error: `no goal at index ${i}` }
+      g.goals[i].done = args.done !== false
+      saveGoals(g)
+      return { ok: true, done: g.goals.filter((x) => x.done).length, total: g.goals.length }
     },
   }))
 }
