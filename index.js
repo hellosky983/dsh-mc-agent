@@ -1542,7 +1542,11 @@ async function autonomyTick() {
       await withTimeout(eatFood(b), 4000)
       return
     }
-    // swim up when in water so the bot doesn't drown (survival, not avoidance)
+    // escape lava first (burns to death), then water (drowns)
+    if (isInLava(b)) {
+      await withTimeout(leaveLava(b), 3000)
+      return
+    }
     if (isInWater(b)) {
       await withTimeout(swimToLand(b), 3000)
       return
@@ -1574,6 +1578,14 @@ function isInWater(b) {
   } catch { return false }
 }
 
+function isInLava(b) {
+  try {
+    const p = b.entity.position
+    const blk = b.blockAt(new _Vec3(Math.floor(p.x), Math.floor(p.y + 0.3), Math.floor(p.z)))
+    return blk && (blk.name === 'lava' || blk.name === 'flowing_lava')
+  } catch { return false }
+}
+
 async function swimToLand(b) {
   // swim up and toward a direction until out of water (not avoidance — avoid drowning)
   const ang = Math.random() * Math.PI * 2
@@ -1583,6 +1595,34 @@ async function swimToLand(b) {
   await sleep(700)
   b.setControlState('jump', false)
   await sleep(300)
+  b.setControlState('forward', false)
+}
+
+async function leaveLava(b) {
+  // find the nearest non-lava block at foot level and move toward it, jumping
+  const p = b.entity.position
+  let best = null, bestDist = Infinity
+  try {
+    for (let dx = -6; dx <= 6; dx++) {
+      for (let dz = -6; dz <= 6; dz++) {
+        if (dx === 0 && dz === 0) continue
+        const blk = b.blockAt(new _Vec3(Math.floor(p.x) + dx, Math.floor(p.y), Math.floor(p.z) + dz))
+        if (blk && blk.name !== 'lava' && blk.name !== 'flowing_lava' && blk.name !== 'air') {
+          const d = dx * dx + dz * dz
+          if (d < bestDist) { bestDist = d; best = { dx, dz } }
+        }
+      }
+    }
+  } catch { /* ignore */ }
+  if (best) {
+    const yaw = Math.atan2(-best.dx, -best.dz)
+    try { await b.look(yaw, 0, true) } catch { /* ignore */ }
+  }
+  b.setControlState('forward', true)
+  b.setControlState('jump', true)
+  await sleep(800)
+  b.setControlState('jump', false)
+  await sleep(200)
   b.setControlState('forward', false)
 }
 
