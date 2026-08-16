@@ -50,7 +50,7 @@ function extractZip(zipPath, destDir) {
 }
 
 export const name = 'dsh-mc-launcher'
-export const inject = ['webServer', 'tools', 'systemPrompt']
+export const inject = ['webServer', 'tools', 'systemPrompt', 'llm', 'agentDefaultModel']
 
 // ---------------------------------------------------------------------------
 // paths & persistence
@@ -1205,6 +1205,7 @@ async function mcControl(action, opts = {}) {
 // ---- Mineflayer bot: direct game-data access + protocol-level control ----
 let bot = null
 let _mf = null, _pf = null, _Vec3 = null, _goals = null
+let autonomyCtx = null  // the apply ctx, for social/decision LLM calls
 
 async function loadBotLibs() {
   if (!_mf || !_pf || !_Vec3) {
@@ -1240,6 +1241,11 @@ async function botConnect(port, username) {
   b.pathfinder.setMovements(new Movements(b))
   b.on('kicked', (r) => { pushLog(`[bot] kicked: ${r}`) })
   b.on('end', () => { if (bot === b) { bot = null; stopAutonomy() } })
+  b.on('chat', (username, message) => {
+    if (username === b.username) return
+    pushLog(`[social] ${username}: ${message}`)
+    onPlayerChat(username, message)
+  })
   bot = b
   return { ok: true, username: b.username, port: p }
 }
@@ -1401,9 +1407,20 @@ const autonomy = {
   enabled: false,
   task: null,           // { type: 'gather'|'explore', target?, count?, done }
   stats: { tasksDone: 0, blocksMined: 0, startedAt: 0 },
+  taskIndex: 0,
   _busy: false,
   _timer: null,
 }
+
+// Self-chosen survival goal cycle: the bot picks its own next goal without
+// any player or model input, like a survivor working through its needs.
+const SURVIVAL_TASKS = [
+  { type: 'gather', target: 'oak_log', label: '砍树收集木材' },
+  { type: 'gather', target: 'stone', label: '挖石头' },
+  { type: 'gather', target: 'coal_ore', label: '挖煤矿' },
+  { type: 'gather', target: 'iron_ore', label: '挖铁矿' },
+  { type: 'explore', label: '探索周围' },
+]
 
 function startAutonomy() {
   if (autonomy._timer) return { ok: true, already: true }
@@ -1486,13 +1503,16 @@ async function flee(b, hostile) {
 
 async function runTask(b) {
   if (!autonomy.task) {
-    // default: gather wood
-    autonomy.task = { type: 'gather', target: 'oak_log', count: 8, done: false }
+    // pick the next self-chosen survival goal
+    const t = SURVIVAL_TASKS[autonomy.taskIndex % SURVIVAL_TASKS.length]
+    autonomy.taskIndex++
+    autonomy.task = { type: t.type, target: t.target, count: 8, done: false }
+    pushLog(`[autonomy] 自主目标：${t.label}`)
   }
   const t = autonomy.task
   if (t.done) {
     autonomy.stats.tasksDone++
-    pushLog(`[autonomy] 任务完成：${t.type} ${t.target || ''}`)
+    pushLog(`[autonomy] 任务完成：${t.type} ${t.target || ''}（已累计完成 ${autonomy.stats.tasksDone} 个目标）`)
     autonomy.task = null
     return
   }
@@ -1527,6 +1547,57 @@ async function exploreTask(b, t) {
   b.pathfinder.setGoal(new _goals.GoalNear(tx, p.y, tz, 2))
   await sleep(2500)
   t.done = true
+}
+
+// ---- social layer: the bot chats back like a friend, via the default model ----
+const SOCIAL_SYSTEM_PROMPT = '你是 Minecraft 世界里玩家的 AI 伙伴。你正在这个世界里生存（采集、探索、建造）。玩家会通过聊天和你说话。请像朋友一样自然、简短地回应（一般 1-2 句话，30 字以内），语气轻松友好，必要时可以报告你正在做的事（如"我在砍树""我刚挖到煤"）。不要用列表或格式，就像真人聊天。'
+
+function userMessage(text) {
+  return {
+    id: 'mc-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+    role: 'user',
+    content: [{ type: 'text', text }],
+    source: { kind: 'user' },
+  }
+}
+
+async function llmChat(system, userText, maxTokens = 200) {
+  if (!autonomyCtx || !autonomyCtx.llm) return null
+  try {
+    const sel = autonomyCtx.agentDefaultModel.currentSelection()
+    let text = ''
+    for await (const chunk of autonomyCtx.llm.stream({
+      provider: sel.provider,
+      model: sel.model,
+      messages: [userMessage(userText)],
+      system,
+      maxTokens,
+    })) {
+      if (chunk.type === 'text-delta') text += chunk.text
+    }
+    return text.trim()
+  } catch (e) {
+    return null
+  }
+}
+
+let _replying = false
+async function onPlayerChat(username, message) {
+  if (_replying) return
+  if (message.startsWith('/')) return // ignore commands
+  _replying = true
+  try {
+    const b = bot
+    if (!b) return
+    const p = b.entity && b.entity.position
+    const loc = p ? `（我当前在 (${Math.round(p.x)}, ${Math.round(p.y)}, ${Math.round(p.z)})）` : ''
+    const reply = await llmChat(SOCIAL_SYSTEM_PROMPT, `玩家 ${username} 说：${message}\n${loc}`, 120)
+    if (reply) {
+      b.chat(reply)
+      pushLog(`[social] 回复 ${username}: ${reply}`)
+    }
+  } catch (e) { /* ignore */ }
+  _replying = false
 }
 
 // Automatically open the single-player world to LAN via keyboard navigation:
@@ -1665,6 +1736,7 @@ function toolResult(renderText) {
 // ---------------------------------------------------------------------------
 
 export function apply(ctx) {
+  autonomyCtx = ctx
   loadSettings()
   ensureDir(DATA_DIR)
   loadGoals()
