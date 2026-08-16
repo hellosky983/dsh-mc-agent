@@ -682,27 +682,34 @@ function msAuthHeaders() {
   return { 'Content-Type': 'application/json', Accept: 'application/json' }
 }
 
+function xblHeaders() {
+  return { 'Content-Type': 'application/json', Accept: 'application/json', 'x-xbl-contract-version': '3' }
+}
+
 async function xblAuthenticate(accessToken) {
   const res = await fetch('https://user.auth.xboxlive.com/user/authenticate', {
     method: 'POST',
-    headers: msAuthHeaders(),
+    headers: xblHeaders(),
     body: JSON.stringify({
       Properties: { AuthMethod: 'RST', SiteName: 'user.auth.xboxlive.com', RpsTicket: `d=${accessToken}` },
       RelyingParty: 'http://auth.xboxlive.com',
       TokenType: 'JWT',
     }),
   })
-  if (!res.ok) throw new Error(`XBL auth failed HTTP ${res.status}`)
+  if (!res.ok) {
+    const body = await res.text().catch(() => '')
+    throw new Error(`XBL auth failed HTTP ${res.status}: ${body.slice(0, 300)}`)
+  }
   const data = await res.json()
   const uhs = data.DisplayClaims && data.DisplayClaims.xui && data.DisplayClaims.xui[0] && data.DisplayClaims.xui[0].uhs
-  if (!uhs) throw new Error('XBL auth missing uhs')
+  if (!uhs) throw new Error(`XBL auth missing uhs: ${JSON.stringify(data).slice(0, 300)}`)
   return { token: data.Token, uhs }
 }
 
 async function xstsAuthenticate(xblToken) {
   const res = await fetch('https://xsts.auth.xboxlive.com/xsts/authorize', {
     method: 'POST',
-    headers: msAuthHeaders(),
+    headers: xblHeaders(),
     body: JSON.stringify({
       Properties: { SandboxId: 'RETAIL', UserTokens: [xblToken] },
       RelyingParty: 'rp://api.minecraftservices.com/',
@@ -713,10 +720,13 @@ async function xstsAuthenticate(xblToken) {
     const data = await res.json().catch(() => null)
     throw new Error(`XSTS rejected (${data && data.XErr ? 'XErr ' + data.XErr : 'no xbox account'})`)
   }
-  if (!res.ok) throw new Error(`XSTS auth failed HTTP ${res.status}`)
+  if (!res.ok) {
+    const body = await res.text().catch(() => '')
+    throw new Error(`XSTS auth failed HTTP ${res.status}: ${body.slice(0, 300)}`)
+  }
   const data = await res.json()
   const uhs = data.DisplayClaims && data.DisplayClaims.xui && data.DisplayClaims.xui[0] && data.DisplayClaims.xui[0].uhs
-  if (!uhs) throw new Error('XSTS auth missing uhs')
+  if (!uhs) throw new Error(`XSTS auth missing uhs: ${JSON.stringify(data).slice(0, 300)}`)
   return { token: data.Token, uhs }
 }
 
