@@ -1224,10 +1224,18 @@ async function loadBotLibs() {
 }
 
 function lanPortFromLogs() {
-  const all = store.game.logs.join('\n') + '\n' + (store.game.logs.join('\n'))
-  let m = all.match(/port\s+(\d{4,5})/i) || all.match(/端口\s*(\d{4,5})/)
+  const parts = [store.game.logs.join('\n')]
+  try {
+    // game writes its own log file, which survives DSH restarts
+    parts.push(fs.readFileSync(path.join(MC_DIR(), 'logs', 'latest.log'), 'utf8'))
+  } catch { /* ignore */ }
+  const all = parts.join('\n')
+  // matches "port 45947", "端口[45947]", "Started serving on 45947", etc.
+  let m = all.match(/port\s*[\[:(：]?\s*(\d{4,5})/i)
+    || all.match(/端口\s*[\[:(：]?\s*(\d{4,5})/)
+    || all.match(/serving on (\d{4,5})/i)
   if (m) return Number(m[1])
-  m = all.match(/:(\d{4,5})\b.*(?:局域网|LAN|local game)/i) || all.match(/(?:局域网|LAN|local game).*?(\d{4,5})/i)
+  m = all.match(/(\d{4,5})\s*(?:局域网|LAN|local game)/i) || all.match(/(?:局域网|LAN|local game)[^\d]*(\d{4,5})/i)
   return m ? Number(m[1]) : null
 }
 
@@ -1257,6 +1265,37 @@ async function botConnect(port, username) {
 
 function botReq() {
   return bot
+}
+
+// ASCII top-down map centered on the bot, for in-game chat display.
+function asciiMap() {
+  const m = mapState()
+  if (!m.ok || !m.botPos) return null
+  const SIZE = 11, R = 5
+  const grid = Array.from({ length: SIZE }, () => Array(SIZE).fill('\u00b7'))
+  grid[R][R] = 'B'
+  let player = null
+  for (const p of m.players) {
+    if (p.isBot) continue
+    const gx = R + (p.x - m.botPos.x)
+    const gz = R + (p.z - m.botPos.z)
+    if (gx >= 0 && gx < SIZE && gz >= 0 && gz < SIZE) grid[gz][gx] = 'P'
+    player = p
+  }
+  // terrain: mark water/ore roughly
+  const TERRAIN = { water: '~', lava: '#', coal_ore: 'o', iron_ore: 'O', diamond_ore: '*' }
+  for (const g of m.ground || []) {
+    const gx = R + g.dx, gz = R + g.dz
+    if (gx >= 0 && gx < SIZE && gz >= 0 && gz < SIZE && grid[gz][gx] === '\u00b7') {
+      grid[gz][gx] = TERRAIN[g.name] || '\u00b7'
+    }
+  }
+  const rows = grid.map((r) => r.join(''))
+  return {
+    rows,
+    bot: m.botPos,
+    player: player ? { x: player.x, z: player.z } : null,
+  }
 }
 
 // Compact live-state snapshot injected into the model context each step, so
@@ -1673,6 +1712,18 @@ async function onPlayerChat(username, message) {
   try {
     const b = bot
     if (!b) return
+    // 0. in-game map request
+    if (/地图|map|小地图/.test(message)) {
+      const mm = asciiMap()
+      if (mm) {
+        b.chat('\u5730\u56fe\uff08B=\u6211\uff0cP=\u4f60\uff0c~=\u6c34\uff0c*=\u94bb\u77f3\uff09\uff1a')
+        for (const row of mm.rows) { b.chat(row); await sleep(80) }
+        if (mm.player) b.chat(`\u6211\u5728(${mm.bot.x},${mm.bot.z})\uff0c\u4f60\u5728(${mm.player.x},${mm.player.z})`)
+      } else {
+        b.chat('\u6211\u8fd8\u6ca1\u8fde\u8fdb\u4e16\u754c\uff0c\u8fde\u4e0a\u540e\u5c31\u80fd\u770b\u5730\u56fe\u4e86')
+      }
+      return
+    }
     // 1. instant rule-based replies for common greetings
     const quick = quickReply(message)
     if (quick) { b.chat(quick); pushLog(`[social] 快速回复 ${username}: ${quick}`); return }
@@ -1914,10 +1965,16 @@ export function apply(ctx) {
 
   // ---- auto-reconnect: when the game opens to LAN, join the bot and start autonomy ----
   let _reconnecting = false
+  let _lastFail = 0
+  let _tickCount = 0
+  pushLog('[auto] 自动重连监视器已启动')
   const autoReconnectTimer = setInterval(async () => {
-    if (!store.settings.autoReconnect || _reconnecting) return
-    if (!store.game.running || bot) return
+    _tickCount++
+    if (!store.settings.autoReconnect) return
+    if (_reconnecting || bot) return
+    if (Date.now() - _lastFail < 60000) return // back off 60s after a failed connect
     const port = lanPortFromLogs()
+    if (_tickCount <= 3) pushLog(`[auto] tick ${_tickCount}: port=${port}`)
     if (!port) return
     _reconnecting = true
     try {
@@ -1927,6 +1984,7 @@ export function apply(ctx) {
         startAutonomy()
       }
     } catch (e) {
+      _lastFail = Date.now()
       pushLog(`[auto] 自动连接失败: ${e.message}`)
     }
     _reconnecting = false
