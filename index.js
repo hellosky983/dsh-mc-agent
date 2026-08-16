@@ -1537,18 +1537,12 @@ async function autonomyTick() {
   autonomy._busySince = Date.now()
   try {
     const b = bot
-    // reflection: eat when hungry
+    // reflection: eat when hungry (survival, not avoidance)
     if (b.food !== undefined && b.food < 15) {
       await withTimeout(eatFood(b), 4000)
       return
     }
-    // reflection: flee when hurt and a hostile mob is close
-    const hostile = nearbyHostile(b)
-    if (hostile && b.health !== undefined && b.health < 15) {
-      await withTimeout(flee(b, hostile), 3000)
-      return
-    }
-    await withTimeout(runTask(b), 8000)
+    await withTimeout(runTask(b), 5000)
   } catch (e) {
     // keep the loop alive
   } finally {
@@ -1646,14 +1640,19 @@ async function gatherTask(b, t) {
   t.missCount = 0
   const dist = block.position.distanceTo(b.entity.position)
   if (dist > 3) {
-    const key = `${block.position.x},${block.position.y},${block.position.z}`
-    if (autonomy._moveTarget !== key) {
-      autonomy._moveTarget = key
-      b.pathfinder.setGoal(new _goals.GoalNear(block.position.x, block.position.y, block.position.z, 2))
-      pushLog(`[autonomy] 寻路到 ${t.target}@(${block.position.x},${block.position.y},${block.position.z})，距离 ${Math.round(dist)}`)
-    }
+    // walk directly toward the block (pathfinder is unreliable)
+    const dx = block.position.x - b.entity.position.x
+    const dz = block.position.z - b.entity.position.z
+    const yaw = Math.atan2(-dx, -dz)
+    try { await b.look(yaw, 0, true) } catch { /* ignore */ }
+    b.setControlState('forward', true)
+    b.setControlState('jump', true)
+    await sleep(300)
+    b.setControlState('jump', false)
+    await sleep(700)
+    pushLog(`[autonomy] 走向 ${t.target}@(${block.position.x},${block.position.y},${block.position.z})，距离 ${Math.round(dist)}`)
   } else {
-    autonomy._moveTarget = null
+    b.setControlState('forward', false)
     try {
       await withTimeout(b.dig(block), 4000)
       autonomy.stats.blocksMined++
@@ -1668,18 +1667,27 @@ async function gatherTask(b, t) {
 }
 
 async function exploreTask(b, t) {
-  const p = b.entity.position
-  const ang = Math.random() * Math.PI * 2
-  const r = 25 + Math.random() * 25
-  const tx = Math.floor(p.x + Math.cos(ang) * r)
-  const tz = Math.floor(p.z + Math.sin(ang) * r)
-  b.pathfinder.setGoal(new _goals.GoalNear(tx, p.y, tz, 3))
-  // wait until the pathfinder actually arrives (or 12s timeout), so it walks farther
-  await new Promise((resolve) => {
-    const timer = setTimeout(resolve, 12000)
-    b.once('goal_reached', () => { clearTimeout(timer); resolve() })
-  })
-  t.done = true
+  const now = Date.now()
+  // keep walking forward (control state persists between ticks)
+  b.setControlState('forward', true)
+  b.setControlState('sprint', true)
+  // every ~3s turn to a new random heading and jump, so it roams the map
+  if (!t.lastTurn || now - t.lastTurn > 3000) {
+    t.lastTurn = now
+    const ang = Math.random() * Math.PI * 2
+    try { await b.look(ang, 0, true) } catch { /* ignore */ }
+    b.setControlState('jump', true)
+    await sleep(250)
+    b.setControlState('jump', false)
+    pushLog(`[autonomy] 跑图转向 (${Math.round(b.entity.position.x)},${Math.round(b.entity.position.z)})`)
+  }
+  // roam for a while, then mark done so the model re-decides
+  t.roamed = (t.roamed || 0) + 1
+  if (t.roamed >= 12) {
+    t.done = true
+    b.setControlState('forward', false)
+    b.setControlState('sprint', false)
+  }
 }
 
 // ---- social layer: the bot chats back like a friend, via the default model ----
