@@ -24,7 +24,8 @@
 - ✅ **Agent 工具集**：`mc_list_versions` / `mc_install` / `mc_launch` / `mc_kill` / `mc_logs` / `mc_status`——AI 通过对话操作启动器
 - ✅ **AI 崩溃分析**：`mc_analyze_crash` 读取崩溃报告与日志，交给 LLM 诊断并给修复建议
 - ✅ **AI 游戏助手**：`mc_world_info`（存档时长/死亡）、`mc_mods`（模组清单）、`mc_version_advice`（版本建议）
-- ✅ **AI 自主生存（框架）**：`mc_set_goals` / `mc_goals` / `mc_complete_goal`——AI 根据用户人设自动设立 ≥20 个目标并逐个推进、持久化到磁盘（视觉/键鼠控制留作可插拔接口，需接入视觉模型）
+- ✅ **AI 自主生存（框架）**：`mc_set_goals` / `mc_goals` / `mc_complete_goal`——AI 根据用户人设自动设立 ≥20 个目标并逐个推进、持久化到磁盘
+- ✅ **视觉 + 控制（端到端）**：`mc_screenshot`（X11 截图游戏窗口）+ `mc_see`（DashScope Qwen-VL 视觉理解画面）+ `mc_control`（xdotool 模拟键鼠）——AI 能"看"画面、理解处境、"操作"游戏，形成完整的自主循环
 - ✅ **双界面**：标签页模式（与 AI 聊天共存，默认）或全屏启动器模式；可单独开关"会话中是否显示 Minecraft 标签"
 - ✅ **主题自定义**：5 套预设（森林/石板/海洋/末地/熔岩）+ 自定义强调色，即时生效
 - ✅ **版本选择框**：下拉分组选择（已安装/Release/Snapshot/Old），不再被超长列表占据版面
@@ -126,7 +127,9 @@ cd <你的profile目录> && pnpm install
 | 对象 | 访问内容 | 说明 |
 | --- | --- | --- |
 | 文件 `~/.minecraft/` | 读 + 写 | 版本文件、libraries、assets、存档（与官方启动器同结构）；`mc_world_info` 读 `saves/*/stats/*.json`，`mc_mods` 读 `mods/*.jar` 元数据，`mc_analyze_crash` 读 `crash-reports/` 与 `logs/latest.log` |
-| 文件 `~/.dsh-mc/` | 写（权限 600） | `settings.json`（配置）、`account.json`（登录 token）、`goals.json`（自主模式目标） |
+| 文件 `~/.dsh-mc/` | 写（权限 600） | `settings.json`（配置）、`account.json`（登录 token）、`goals.json`（自主模式目标）、`shots/`（游戏截图，供 `mc_see` 分析） |
+| 网络：`dashscope.aliyuncs.com` | 只读 | `mc_see` 调用 DashScope Qwen-VL 视觉模型识别截图（需 `DASHSCOPE_API_KEY`） |
+| 进程：`xdotool` / `ffmpeg` | 执行 | `mc_control`（键鼠输入）、`mc_screenshot`（X11 截屏），仅作用于 Minecraft 窗口 |
 | 网络：`launchermeta.mojang.com`、`piston-meta.mojang.com`、`resources.download.minecraft.net` | 只读 | 版本清单与游戏文件下载（Mojang 官方源） |
 | 网络：`login.microsoftonline.com`、`user.auth.xboxlive.com`、`xsts.auth.xboxlive.com`、`api.minecraftservices.com` | 只读 | Microsoft 设备码登录链 |
 | 进程 | 启动 Java 子进程 | 游戏本体；可被 Stop 按钮终止 |
@@ -175,6 +178,28 @@ DSH 宿主进程（dsh-mc-launcher Host 半）
    ├─ spawn Java 游戏进程，日志环形缓冲
    └─ 游戏数据只读分析（crash-reports / saves stats / mods 元数据）
 ```
+
+## 🤖 AI 自主生存（视觉 + 控制）
+
+让 AI 像人一样"看屏幕、操作游戏"：
+
+```
+agent 循环：
+  mc_set_goals(人设) → 设定 ≥20 个目标
+  mc_launch            → 启动游戏（窗口模式）
+  ┌─ mc_screenshot     → 截取游戏窗口
+  ├─ mc_see            → 视觉模型描述画面（环境/威胁/状态）
+  ├─ 决策              → 下一步做什么
+  ├─ mc_control        → 前进/跳跃/攻击/转向…
+  └─ mc_complete_goal  → 达成后标记，继续下一个
+```
+
+**依赖**：
+- 视觉：阿里百炼 DashScope 的 `qwen-vl-plus`（需在 `~/.bashrc` 配置 `export DASHSCOPE_API_KEY=sk-...`，或在 设置 → DashScope key 填入）
+- 控制/截图：Linux X11 + `xdotool` + `ffmpeg`（Debian/Ubuntu：`sudo apt install xdotool ffmpeg`）
+- 游戏建议**窗口模式**运行（更易定位与截屏）
+
+> 注：`mc_control` 会激活并聚焦游戏窗口（模拟真实键盘鼠标），执行期间请勿同时操作电脑，以免干扰。
 
 ## ❓ 常见问题
 

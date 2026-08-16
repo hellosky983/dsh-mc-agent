@@ -75,6 +75,7 @@ const DEFAULT_SETTINGS = {
   uiMode: 'tab', // 'tab' = a Minecraft tab inside the DSH chat UI; 'fullscreen' = replace the whole page
   showTab: true, // when uiMode is 'tab', whether to show the Minecraft tab in the session
   theme: { preset: 'default', accent: '' }, // 'default' | 'light' | 'ocean' | 'end' | 'lava'; accent overrides the primary color
+  dashscopeKey: '', // optional: override the DASHSCOPE_API_KEY from ~/.bashrc for mc_see
 }
 
 // ---------------------------------------------------------------------------
@@ -1028,7 +1029,7 @@ async function route(req, res) {
       case 'settings': {
         const body = await readBody(req)
         const patch = {}
-        for (const key of ['gameDir', 'javaPath', 'memoryMb', 'clientId', 'width', 'height', 'fullscreen', 'eulaAccepted', 'uiMode', 'showTab', 'theme']) {
+        for (const key of ['gameDir', 'javaPath', 'memoryMb', 'clientId', 'width', 'height', 'fullscreen', 'eulaAccepted', 'uiMode', 'showTab', 'theme', 'dashscopeKey']) {
           if (body[key] !== undefined) patch[key] = body[key]
         }
         store.settings = { ...store.settings, ...patch }
@@ -1059,6 +1060,127 @@ async function route(req, res) {
 // ---------------------------------------------------------------------------
 // game analysis helpers (agent tools)
 // ---------------------------------------------------------------------------
+
+// ---- vision + control: let the agent see and play Minecraft ----
+function sh(cmd, args, opts = {}) {
+  return new Promise((resolve) => {
+    execFile(cmd, args, {
+      timeout: opts.timeout || 12000,
+      env: { ...process.env, DISPLAY: process.env.DISPLAY || ':0' },
+    }, (err, stdout, stderr) => {
+      resolve({ ok: !err, stdout: String(stdout || ''), stderr: String(stderr || ''), code: err ? err.code : 0 })
+    })
+  })
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+async function findGameWindow() {
+  for (const pat of ['Minecraft', 'minecraft', 'Java']) {
+    const r = await sh('xdotool', ['search', '--name', pat])
+    const ids = r.stdout.trim().split('\n').filter(Boolean)
+    if (ids.length) return ids[0]
+  }
+  return null
+}
+
+async function gameGeometry(winId) {
+  const r = await sh('xdotool', ['getwindowgeometry', '--shell', winId])
+  const g = { x: 0, y: 0, w: 1280, h: 720 }
+  for (const line of r.stdout.split('\n')) {
+    const m = line.match(/^(X|Y|WIDTH|HEIGHT)=(\d+)/)
+    if (m) g[m[1] === 'X' ? 'x' : m[1] === 'Y' ? 'y' : m[1].toLowerCase()] = Number(m[2])
+  }
+  return g
+}
+
+function dashscopeKey() {
+  if (store.settings.dashscopeKey) return store.settings.dashscopeKey
+  try {
+    const rc = fs.readFileSync(path.join(HOME, '.bashrc'), 'utf8')
+    const m = rc.match(/DASHSCOPE_API_KEY\s*=\s*['"]?([^'"\n]+)/)
+    return m ? m[1] : ''
+  } catch { return '' }
+}
+
+const KEYMAP = {
+  forward: 'w', back: 's', left: 'a', right: 'd', jump: 'space', sneak: 'shift',
+  sprint: 'ctrl', inventory: 'e', drop: 'q', chat: 't', slash: 'slash',
+  escape: 'Escape', slot1: '1', slot2: '2', slot3: '3', slot4: '4', slot5: '5',
+  slot6: '6', slot7: '7', slot8: '8', slot9: '9',
+}
+
+async function mcScreenshot() {
+  const win = await findGameWindow()
+  if (!win) return { ok: false, error: 'no Minecraft window found — start the game first (windowed mode is easier to control)' }
+  const geo = await gameGeometry(win)
+  const outDir = path.join(DATA_DIR, 'shots')
+  ensureDir(outDir)
+  const file = path.join(outDir, `shot-${Date.now()}.png`)
+  const r = await sh('ffmpeg', [
+    '-y', '-loglevel', 'error', '-f', 'x11grab',
+    '-video_size', `${geo.w}x${geo.h}`, '-i', `:0+${geo.x},${geo.y}`,
+    '-frames:v', '1', file,
+  ])
+  if (!r.ok || !fs.existsSync(file)) return { ok: false, error: `screenshot failed: ${r.stderr || r.stdout}` }
+  store.lastShot = file
+  return { ok: true, path: file, width: geo.w, height: geo.h }
+}
+
+async function mcSee(imagePath, prompt) {
+  const key = dashscopeKey()
+  if (!key) return { ok: false, error: 'DASHSCOPE_API_KEY not configured — set it in ~/.bashrc or in Settings' }
+  const file = imagePath || store.lastShot
+  if (!file || !fs.existsSync(file)) return { ok: false, error: 'no screenshot available — call mc_screenshot first' }
+  const b64 = fs.readFileSync(file).toString('base64')
+  const res = await fetch('https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+    body: JSON.stringify({
+      model: 'qwen-vl-plus',
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image_url', image_url: { url: `data:image/png;base64,${b64}` } },
+          { type: 'text', text: prompt || 'Describe this Minecraft game screen in detail: what is visible, the environment (biome, time of day), the player\'s immediate situation, and anything notable (health, hunger bar, hotbar selection, nearby mobs or threats).' },
+        ],
+      }],
+    }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) return { ok: false, error: `vision API HTTP ${res.status}: ${data.error?.message || JSON.stringify(data).slice(0, 200)}` }
+  const text = data.choices?.[0]?.message?.content
+  return { ok: true, description: typeof text === 'string' ? text : JSON.stringify(text) }
+}
+
+async function mcControl(action, opts = {}) {
+  const win = await findGameWindow()
+  if (!win) return { ok: false, error: 'no Minecraft window found' }
+  await sh('xdotool', ['windowactivate', '--sync', win])
+  await sh('xdotool', ['windowfocus', '--sync', win])
+  await sleep(80)
+  if (action === 'click' || action === 'attack' || action === 'break') {
+    await sh('xdotool', ['click', '--window', win, '1'])
+    return { ok: true, action: 'left-click' }
+  }
+  if (action === 'rclick' || action === 'use' || action === 'place') {
+    await sh('xdotool', ['click', '--window', win, '3'])
+    return { ok: true, action: 'right-click' }
+  }
+  if (action === 'look') {
+    const dx = Number(opts.dx) || 0
+    const dy = Number(opts.dy) || 0
+    await sh('xdotool', ['mousemove_relative', '--', String(dx), String(dy)])
+    return { ok: true, action: `look dx=${dx} dy=${dy}` }
+  }
+  const key = KEYMAP[action] || action
+  const holdMs = (action === 'forward' || action === 'back' || action === 'left' || action === 'right')
+    ? (Number(opts.ms) || 400) : 90
+  await sh('xdotool', ['keydown', '--window', win, key])
+  await sleep(holdMs)
+  await sh('xdotool', ['keyup', '--window', win, key])
+  return { ok: true, action, key, heldMs: holdMs }
+}
 
 function readCrashReport() {
   const gameDir = MC_DIR()
@@ -1413,6 +1535,45 @@ export function apply(ctx) {
       g.goals[i].done = args.done !== false
       saveGoals(g)
       return { ok: true, done: g.goals.filter((x) => x.done).length, total: g.goals.length }
+    },
+  }))
+
+  // ---- vision + control: let the agent see and play the game (X11 + Qwen-VL) ----
+  tools.register(defineTool({
+    name: 'mc_screenshot',
+    description: 'Capture a screenshot of the running Minecraft game window (X11). Requires the game to be running in a window on the same display. Saves the PNG locally and returns its path, ready for mc_see.',
+    parameters: {},
+    output: { schema: { type: 'object', additionalProperties: false, properties: {} }, render: toolResult() },
+    async execute() {
+      return mcScreenshot()
+    },
+  }))
+
+  tools.register(defineTool({
+    name: 'mc_see',
+    description: 'Analyze a Minecraft game screenshot with a vision model (DashScope Qwen-VL) and return a text description of what is on screen — environment, threats, player status. Use mc_screenshot first, then mc_see to understand the current situation before acting.',
+    parameters: {
+      path: { type: 'string', description: 'Screenshot path; defaults to the most recent mc_screenshot' },
+      prompt: { type: 'string', description: 'Optional question or description focus for the vision model' },
+    },
+    output: { schema: { type: 'object', additionalProperties: false, properties: {} }, render: toolResult() },
+    async execute(args) {
+      return mcSee(args.path, args.prompt)
+    },
+  }))
+
+  tools.register(defineTool({
+    name: 'mc_control',
+    description: 'Send keyboard/mouse input to the running Minecraft window. action: forward/back/left/right (move, hold ms), jump/sneak/sprint, inventory/drop/chat/escape, slot1..slot9, attack (left-click/break), use (right-click/place), look (turn view by dx/dy mouse).',
+    parameters: {
+      action: { type: 'string', required: true, description: 'One of: forward, back, left, right, jump, sneak, sprint, inventory, drop, chat, escape, slot1..slot9, attack, use, look' },
+      ms: { type: 'number', description: 'Hold time in ms for movement keys (default 400)' },
+      dx: { type: 'number', description: 'Horizontal mouse delta for look' },
+      dy: { type: 'number', description: 'Vertical mouse delta for look' },
+    },
+    output: { schema: { type: 'object', additionalProperties: false, properties: {} }, render: toolResult() },
+    async execute(args) {
+      return mcControl(args.action, { ms: args.ms, dx: args.dx, dy: args.dy })
     },
   }))
 }
