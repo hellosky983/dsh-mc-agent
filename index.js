@@ -1197,6 +1197,141 @@ async function mcControl(action, opts = {}) {
   return { ok: true, action, key, heldMs: holdMs }
 }
 
+// ---- Mineflayer bot: direct game-data access + protocol-level control ----
+let bot = null
+let _mf = null, _pf = null, _Vec3 = null
+
+async function loadBotLibs() {
+  if (!_mf) {
+    _mf = await import('mineflayer')
+    const vec3mod = await import('vec3')
+    _Vec3 = vec3mod.default || vec3mod
+    _pf = await import('mineflayer-pathfinder')
+  }
+  return { mineflayer: _mf, pathfinder: _pf.pathfinder, Movements: _pf.Movements, Vec3: _Vec3 }
+}
+
+function lanPortFromLogs() {
+  const all = store.game.logs.join('\n') + '\n' + (store.game.logs.join('\n'))
+  let m = all.match(/port\s+(\d{4,5})/i) || all.match(/端口\s*(\d{4,5})/)
+  if (m) return Number(m[1])
+  m = all.match(/:(\d{4,5})\b.*(?:局域网|LAN|local game)/i) || all.match(/(?:局域网|LAN|local game).*?(\d{4,5})/i)
+  return m ? Number(m[1]) : null
+}
+
+async function botConnect(port, username) {
+  if (bot) { try { bot.end() } catch { /* ignore */ } bot = null }
+  const { mineflayer, pathfinder, Movements, Vec3 } = await loadBotLibs()
+  const p = Number(port) || lanPortFromLogs()
+  if (!p) return { ok: false, error: 'no LAN port — open the game to LAN (Esc → Open to LAN) or pass port' }
+  const b = mineflayer.createBot({ host: '127.0.0.1', port: p, username: username || 'DSH-Bot' })
+  await new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`connect timeout on port ${p}`)), 12000)
+    b.once('spawn', () => { clearTimeout(t); resolve() })
+    b.once('error', (e) => { clearTimeout(t); reject(e) })
+  })
+  b.loadPlugin(pathfinder)
+  b.pathfinder.setMovements(new Movements(b))
+  b.on('kicked', (r) => { pushLog(`[bot] kicked: ${r}`) })
+  b.on('end', () => { if (bot === b) bot = null })
+  bot = b
+  return { ok: true, username: b.username, port: p }
+}
+
+function botReq() {
+  return bot
+}
+
+function botState() {
+  const b = botReq()
+  if (!b) return { ok: false, error: 'bot not connected — call mc_bot_connect first (game must be open to LAN)' }
+  const p = b.entity && b.entity.position
+  return {
+    ok: true,
+    username: b.username,
+    position: p ? { x: Math.round(p.x * 10) / 10, y: Math.round(p.y * 10) / 10, z: Math.round(p.z * 10) / 10 } : null,
+    health: b.health,
+    food: b.food,
+    gamemode: b.game && b.game.gameMode,
+    heldItem: b.heldItem ? { name: b.heldItem.name, count: b.heldItem.count } : null,
+    inventory: b.inventory ? b.inventory.items().slice(0, 36).map((i) => ({ name: i.name, count: i.count })) : [],
+    nearBlocks: b.blockAt ? (function () {
+      if (!p) return []
+      const out = []
+      for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) {
+        const bl = b.blockAt(new _Vec3(Math.floor(p.x) + dx, Math.floor(p.y), Math.floor(p.z) + dz))
+        if (bl && bl.name !== 'air') out.push({ name: bl.name, rel: `${dx},0,${dz}` })
+      }
+      return out.slice(0, 12)
+    })() : [],
+  }
+}
+
+async function botMove(x, y, z) {
+  const b = botReq()
+  if (!b) return { ok: false, error: 'bot not connected' }
+  const { Vec3 } = await loadBotLibs()
+  const { goals } = _pf
+  return new Promise((resolve) => {
+    const goal = new goals.GoalNear(x, y, z, 1)
+    b.pathfinder.setGoal(goal)
+    const t = setTimeout(() => { b.pathfinder.setGoal(null); resolve({ ok: false, error: 'path timeout (unreachable?)' }) }, 20000)
+    const onReach = () => { clearTimeout(t); b.removeListener('goal_reached', onReach); resolve({ ok: true }) }
+    b.once('goal_reached', onReach)
+  })
+}
+
+async function botLook(yaw, pitch) {
+  const b = botReq()
+  if (!b) return { ok: false, error: 'bot not connected' }
+  await b.look(Number(yaw) || 0, Number(pitch) || 0, true)
+  return { ok: true, yaw: b.entity.yaw, pitch: b.entity.pitch }
+}
+
+async function botDig(x, y, z) {
+  const b = botReq()
+  if (!b) return { ok: false, error: 'bot not connected' }
+  const { Vec3 } = await loadBotLibs()
+  const block = b.blockAt(new Vec3(Math.floor(x), Math.floor(y), Math.floor(z)))
+  if (!block || block.name === 'air') return { ok: false, error: `no block at ${x},${y},${z}` }
+  try {
+    await b.dig(block)
+    return { ok: true, dug: block.name }
+  } catch (e) {
+    return { ok: false, error: `dig failed: ${e.message}` }
+  }
+}
+
+async function botPlace(x, y, z) {
+  const b = botReq()
+  if (!b) return { ok: false, error: 'bot not connected' }
+  const { Vec3 } = await loadBotLibs()
+  const ref = b.blockAt(new Vec3(Math.floor(x), Math.floor(y) - 1, Math.floor(z)))
+  if (!ref) return { ok: false, error: 'no reference block below target' }
+  try {
+    await b.placeBlock(ref, new Vec3(0, 1, 0))
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: `place failed: ${e.message}` }
+  }
+}
+
+async function botEquip(name) {
+  const b = botReq()
+  if (!b) return { ok: false, error: 'bot not connected' }
+  const item = b.inventory.items().find((i) => i.name === name || (i.name && i.name.includes(name)))
+  if (!item) return { ok: false, error: `no item matching "${name}"` }
+  await b.equip(item, 'hand')
+  return { ok: true, equipped: item.name }
+}
+
+async function botChat(msg) {
+  const b = botReq()
+  if (!b) return { ok: false, error: 'bot not connected' }
+  b.chat(String(msg))
+  return { ok: true }
+}
+
 function readCrashReport() {
   const gameDir = MC_DIR()
   const crashDir = path.join(gameDir, 'crash-reports')
@@ -1372,7 +1507,7 @@ export function apply(ctx) {
     name: 'mc_list_versions',
     description: 'List Minecraft versions: locally installed ones plus the latest release/snapshot from Mojang. Use to see what is available or already installed.',
     parameters: {},
-    output: { schema: { type: 'object', additionalProperties: false, properties: {} }, render: toolResult() },
+    output: { schema: { type: 'object', additionalProperties: true, properties: {} }, render: toolResult() },
     async execute() {
       const manifest = await getManifest()
       const installed = installedVersions()
@@ -1386,7 +1521,7 @@ export function apply(ctx) {
     parameters: {
       id: { type: 'string', required: true, description: 'Minecraft version id, e.g. "1.21.11" (see mc_list_versions)' },
     },
-    output: { schema: { type: 'object', additionalProperties: false, properties: {} }, render: toolResult() },
+    output: { schema: { type: 'object', additionalProperties: true, properties: {} }, render: toolResult() },
     async execute(args) {
       if (store.downloadBusy) return { ok: false, error: 'another install is running' }
       installVersion(args.id)
@@ -1400,7 +1535,7 @@ export function apply(ctx) {
     parameters: {
       id: { type: 'string', description: 'Version id; defaults to the selected one' },
     },
-    output: { schema: { type: 'object', additionalProperties: false, properties: {} }, render: toolResult() },
+    output: { schema: { type: 'object', additionalProperties: true, properties: {} }, render: toolResult() },
     async execute(args) {
       const id = args.id || store.selected
       if (!id) return { ok: false, error: 'no version selected' }
@@ -1419,7 +1554,7 @@ export function apply(ctx) {
     name: 'mc_kill',
     description: 'Stop the running Minecraft game process (SIGTERM).',
     parameters: {},
-    output: { schema: { type: 'object', additionalProperties: false, properties: {} }, render: toolResult() },
+    output: { schema: { type: 'object', additionalProperties: true, properties: {} }, render: toolResult() },
     async execute() {
       if (store.game.pid) {
         try { process.kill(store.game.pid) } catch { /* gone */ }
@@ -1436,7 +1571,7 @@ export function apply(ctx) {
     parameters: {
       lines: { type: 'number', description: 'How many recent lines to return (default 50, max 300)' },
     },
-    output: { schema: { type: 'object', additionalProperties: false, properties: {} }, render: toolResult() },
+    output: { schema: { type: 'object', additionalProperties: true, properties: {} }, render: toolResult() },
     async execute(args) {
       const n = Math.min(300, Math.max(1, Number(args.lines) || 50))
       return { lines: store.game.logs.slice(-n) }
@@ -1447,7 +1582,7 @@ export function apply(ctx) {
     name: 'mc_status',
     description: 'Launcher status: account, selected version, Java runtime, active download progress, and running game state.',
     parameters: {},
-    output: { schema: { type: 'object', additionalProperties: false, properties: {} }, render: toolResult() },
+    output: { schema: { type: 'object', additionalProperties: true, properties: {} }, render: toolResult() },
     async execute() {
       const java = await detectJava()
       store.javaInfo = java
@@ -1466,7 +1601,7 @@ export function apply(ctx) {
     name: 'mc_analyze_crash',
     description: 'Read the latest Minecraft crash report and recent game log so the model can diagnose a crash. Returns raw text for analysis.',
     parameters: {},
-    output: { schema: { type: 'object', additionalProperties: false, properties: {} }, render: toolResult() },
+    output: { schema: { type: 'object', additionalProperties: true, properties: {} }, render: toolResult() },
     async execute() {
       const data = readCrashReport()
       if (!data.crash && !data.logTail && !data.recentLauncherLogs) {
@@ -1480,7 +1615,7 @@ export function apply(ctx) {
     name: 'mc_world_info',
     description: 'List local Minecraft worlds (saves) with play time and deaths, read from each world\'s stats files.',
     parameters: {},
-    output: { schema: { type: 'object', additionalProperties: false, properties: {} }, render: toolResult() },
+    output: { schema: { type: 'object', additionalProperties: true, properties: {} }, render: toolResult() },
     async execute() {
       return { worlds: worldInfo() }
     },
@@ -1490,7 +1625,7 @@ export function apply(ctx) {
     name: 'mc_mods',
     description: 'List installed mods (mods/ directory) with their loader and version, parsed from fabric.mod.json / mods.toml metadata.',
     parameters: {},
-    output: { schema: { type: 'object', additionalProperties: false, properties: {} }, render: toolResult() },
+    output: { schema: { type: 'object', additionalProperties: true, properties: {} }, render: toolResult() },
     async execute() {
       return { mods: modsList() }
     },
@@ -1500,7 +1635,7 @@ export function apply(ctx) {
     name: 'mc_version_advice',
     description: 'Suggest a Minecraft version: compare installed versions against the latest release from Mojang.',
     parameters: {},
-    output: { schema: { type: 'object', additionalProperties: false, properties: {} }, render: toolResult() },
+    output: { schema: { type: 'object', additionalProperties: true, properties: {} }, render: toolResult() },
     async execute() {
       await getManifest()
       return versionAdvice()
@@ -1513,7 +1648,7 @@ export function apply(ctx) {
     name: 'mc_goals',
     description: 'Read the current autonomous-play goal list for the active persona (see mc_set_goals). Returns the persona and each goal with its done status.',
     parameters: {},
-    output: { schema: { type: 'object', additionalProperties: false, properties: {} }, render: toolResult() },
+    output: { schema: { type: 'object', additionalProperties: true, properties: {} }, render: toolResult() },
     async execute() {
       return loadGoals()
     },
@@ -1526,7 +1661,7 @@ export function apply(ctx) {
       persona: { type: 'string', required: true, description: 'The persona/character the AI role-plays, e.g. "a cautious survivalist who builds a farm" or "an explorer mapping the whole world"' },
       goals: { type: 'string', required: true, description: 'JSON-encoded array of at least 20 goal strings, e.g. \'["punch a tree and craft a crafting table","mine 64 cobblestone","build a wooden house","..." ]\'' },
     },
-    output: { schema: { type: 'object', additionalProperties: false, properties: {} }, render: toolResult() },
+    output: { schema: { type: 'object', additionalProperties: true, properties: {} }, render: toolResult() },
     async execute(args) {
       let goals
       try { goals = JSON.parse(args.goals) } catch { return { ok: false, error: 'goals must be a JSON-encoded array of strings' } }
@@ -1543,7 +1678,7 @@ export function apply(ctx) {
       index: { type: 'number', required: true, description: '0-based index of the goal in the list (see mc_goals)' },
       done: { type: 'boolean', description: 'true to mark done (default), false to mark not done' },
     },
-    output: { schema: { type: 'object', additionalProperties: false, properties: {} }, render: toolResult() },
+    output: { schema: { type: 'object', additionalProperties: true, properties: {} }, render: toolResult() },
     async execute(args) {
       const g = loadGoals()
       const i = Number(args.index)
@@ -1559,7 +1694,7 @@ export function apply(ctx) {
     name: 'mc_screenshot',
     description: 'Capture a screenshot of the running Minecraft game window (X11). Requires the game to be running in a window on the same display. Saves the PNG locally and returns its path, ready for mc_see.',
     parameters: {},
-    output: { schema: { type: 'object', additionalProperties: false, properties: {} }, render: toolResult() },
+    output: { schema: { type: 'object', additionalProperties: true, properties: {} }, render: toolResult() },
     async execute() {
       return mcScreenshot()
     },
@@ -1572,7 +1707,7 @@ export function apply(ctx) {
       path: { type: 'string', description: 'Screenshot path; defaults to the most recent mc_screenshot' },
       prompt: { type: 'string', description: 'Optional question or description focus for the vision model' },
     },
-    output: { schema: { type: 'object', additionalProperties: false, properties: {} }, render: toolResult() },
+    output: { schema: { type: 'object', additionalProperties: true, properties: {} }, render: toolResult() },
     async execute(args) {
       return mcSee(args.path, args.prompt)
     },
@@ -1587,9 +1722,109 @@ export function apply(ctx) {
       dx: { type: 'number', description: 'Horizontal mouse delta for look' },
       dy: { type: 'number', description: 'Vertical mouse delta for look' },
     },
-    output: { schema: { type: 'object', additionalProperties: false, properties: {} }, render: toolResult() },
+    output: { schema: { type: 'object', additionalProperties: true, properties: {} }, render: toolResult() },
     async execute(args) {
       return mcControl(args.action, { ms: args.ms, dx: args.dx, dy: args.dy })
+    },
+  }))
+
+  // ---- Mineflayer bot tools: fast, precise data + control via the LAN protocol ----
+  tools.register(defineTool({
+    name: 'mc_bot_connect',
+    description: 'Connect a bot into the running single-player world via LAN (fast, precise alternative to screenshots). The game must be open to LAN first (Esc → Open to LAN). Port is auto-detected from game logs if omitted.',
+    parameters: {
+      port: { type: 'number', description: 'LAN port (auto-detected from logs if omitted)' },
+      username: { type: 'string', description: 'Bot name (default DSH-Bot)' },
+    },
+    output: { schema: { type: 'object', additionalProperties: true, properties: {} }, render: toolResult() },
+    async execute(args) {
+      return botConnect(args.port, args.username)
+    },
+  }))
+
+  tools.register(defineTool({
+    name: 'mc_bot_state',
+    description: 'Read the bot\'s live in-game state: position, health, food, gamemode, held item, inventory and nearby blocks. Much faster and more precise than screenshots.',
+    parameters: {},
+    output: { schema: { type: 'object', additionalProperties: true, properties: {} }, render: toolResult() },
+    async execute() { return botState() },
+  }))
+
+  tools.register(defineTool({
+    name: 'mc_bot_move',
+    description: 'Move the bot to a block coordinate (pathfinding). Returns when the goal is reached or times out.',
+    parameters: {
+      x: { type: 'number', required: true, description: 'Target x' },
+      y: { type: 'number', required: true, description: 'Target y' },
+      z: { type: 'number', required: true, description: 'Target z' },
+    },
+    output: { schema: { type: 'object', additionalProperties: true, properties: {} }, render: toolResult() },
+    async execute(args) { return botMove(args.x, args.y, args.z) },
+  }))
+
+  tools.register(defineTool({
+    name: 'mc_bot_look',
+    description: 'Turn the bot\'s head to a yaw/pitch (radians).',
+    parameters: {
+      yaw: { type: 'number', description: 'Yaw in radians' },
+      pitch: { type: 'number', description: 'Pitch in radians' },
+    },
+    output: { schema: { type: 'object', additionalProperties: true, properties: {} }, render: toolResult() },
+    async execute(args) { return botLook(args.yaw, args.pitch) },
+  }))
+
+  tools.register(defineTool({
+    name: 'mc_bot_dig',
+    description: 'Make the bot mine/break the block at (x,y,z).',
+    parameters: {
+      x: { type: 'number', required: true, description: 'Block x' },
+      y: { type: 'number', required: true, description: 'Block y' },
+      z: { type: 'number', required: true, description: 'Block z' },
+    },
+    output: { schema: { type: 'object', additionalProperties: true, properties: {} }, render: toolResult() },
+    async execute(args) { return botDig(args.x, args.y, args.z) },
+  }))
+
+  tools.register(defineTool({
+    name: 'mc_bot_place',
+    description: 'Place the currently held block at (x,y,z).',
+    parameters: {
+      x: { type: 'number', required: true, description: 'Target x' },
+      y: { type: 'number', required: true, description: 'Target y' },
+      z: { type: 'number', required: true, description: 'Target z' },
+    },
+    output: { schema: { type: 'object', additionalProperties: true, properties: {} }, render: toolResult() },
+    async execute(args) { return botPlace(args.x, args.y, args.z) },
+  }))
+
+  tools.register(defineTool({
+    name: 'mc_bot_equip',
+    description: 'Equip an inventory item in the bot\'s hand by name (e.g. "stone_pickaxe", "diamond_sword", "cobblestone").',
+    parameters: {
+      name: { type: 'string', required: true, description: 'Item name or substring' },
+    },
+    output: { schema: { type: 'object', additionalProperties: true, properties: {} }, render: toolResult() },
+    async execute(args) { return botEquip(args.name) },
+  }))
+
+  tools.register(defineTool({
+    name: 'mc_bot_chat',
+    description: 'Send a chat message or game command from the bot (prefix "/" for commands, e.g. "/time set day").',
+    parameters: {
+      message: { type: 'string', required: true, description: 'Message or command' },
+    },
+    output: { schema: { type: 'object', additionalProperties: true, properties: {} }, render: toolResult() },
+    async execute(args) { return botChat(args.message) },
+  }))
+
+  tools.register(defineTool({
+    name: 'mc_bot_disconnect',
+    description: 'Disconnect the bot from the world.',
+    parameters: {},
+    output: { schema: { type: 'object', additionalProperties: true, properties: {} }, render: toolResult() },
+    async execute() {
+      if (bot) { try { bot.end() } catch { /* ignore */ } bot = null }
+      return { ok: true }
     },
   }))
 }

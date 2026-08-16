@@ -26,7 +26,8 @@
 - ✅ **AI 崩溃分析**：`mc_analyze_crash` 读取崩溃报告与日志，交给 LLM 诊断并给修复建议
 - ✅ **AI 游戏助手**：`mc_world_info`（存档时长/死亡）、`mc_mods`（模组清单）、`mc_version_advice`（版本建议）
 - ✅ **AI 自主生存（框架）**：`mc_set_goals` / `mc_goals` / `mc_complete_goal`——AI 根据用户人设自动设立 ≥20 个目标并逐个推进、持久化到磁盘
-- ✅ **视觉 + 控制（端到端）**：`mc_screenshot`（X11 截图游戏窗口）+ `mc_see`（DashScope Qwen-VL 视觉理解画面）+ `mc_control`（xdotool 模拟键鼠）——AI 能"看"画面、理解处境、"操作"游戏，形成完整的自主循环
+- ✅ **视觉 + 控制（端到端）**：`mc_screenshot`（X11 截图游戏窗口）+ `mc_see`（DashScope Qwen-VL 视觉理解画面）+ `mc_control`（xdotool 模拟键鼠）——AI 能"看"画面、理解处境、"操作"游戏
+- ✅ **Mineflayer 机器人（快速模式）**：`mc_bot_*` 工具通过 LAN 协议直连游戏，实时读内存数据（位置/背包/血量/周围方块）+ 精确控制（移动/挖掘/放置/转向），比截图快几个数量级
 - ✅ **双界面**：标签页模式（与 AI 聊天共存，默认）或全屏启动器模式；可单独开关"会话中是否显示 Minecraft 标签"
 - ✅ **主题自定义**：5 套预设（森林/石板/海洋/末地/熔岩）+ 自定义强调色，即时生效
 - ✅ **版本选择框**：下拉分组选择（已安装/Release/Snapshot/Old），不再被超长列表占据版面
@@ -130,6 +131,7 @@ cd <你的profile目录> && pnpm install
 | 文件 `~/.minecraft/` | 读 + 写 | 版本文件、libraries、assets、存档（与官方启动器同结构）；`mc_world_info` 读 `saves/*/stats/*.json`，`mc_mods` 读 `mods/*.jar` 元数据，`mc_analyze_crash` 读 `crash-reports/` 与 `logs/latest.log` |
 | 文件 `~/.dsh-mc/` | 写（权限 600） | `settings.json`（配置）、`account.json`（登录 token）、`goals.json`（自主模式目标）、`shots/`（游戏截图，供 `mc_see` 分析） |
 | 网络：`dashscope.aliyuncs.com` | 只读 | `mc_see` 调用 DashScope Qwen-VL 视觉模型识别截图（需 `DASHSCOPE_API_KEY`） |
+| 网络：`127.0.0.1:<LAN端口>` | 双向 | `mc_bot_*` 通过 Minecraft LAN 协议读写游戏数据（Mineflayer） |
 | 进程：`xdotool` / `ffmpeg` | 执行 | `mc_control`（键鼠输入）、`mc_screenshot`（X11 截屏），仅作用于 Minecraft 窗口 |
 | 网络：`launchermeta.mojang.com`、`piston-meta.mojang.com`、`resources.download.minecraft.net` | 只读 | 版本清单与游戏文件下载（Mojang 官方源） |
 | 网络：`login.microsoftonline.com`、`user.auth.xboxlive.com`、`xsts.auth.xboxlive.com`、`api.minecraftservices.com` | 只读 | Microsoft 设备码登录链 |
@@ -201,6 +203,23 @@ agent 循环：
 - 游戏建议**窗口模式**运行（更易定位与截屏）
 
 > 注：`mc_control` 会激活并聚焦游戏窗口（模拟真实键盘鼠标），执行期间请勿同时操作电脑，以免干扰。
+
+### ⚡ 快速模式：LAN 机器人（Mineflayer）
+
+比截图/键鼠快几个数量级——AI 直接读写游戏内存数据、协议级控制：
+
+```
+agent 循环（快速）：
+  1. 游戏内 Esc → 对局域网开放（Open to LAN）→ 记下端口
+  2. mc_bot_connect       → 机器人连入世界（端口自动从日志探测）
+  3. mc_bot_state         → 实时读位置/血量/饥饿/背包/周围方块（毫秒级）
+  4. mc_bot_move/dig/place/look/equip → 精确控制
+  5. mc_bot_chat("/...")  → 执行游戏命令
+```
+
+- `mc_bot_state` 返回精确坐标、血量、背包物品、手持物品、周围方块名——无需截图识别
+- `mc_bot_move(x,y,z)` 自动寻路、`mc_bot_dig` 挖掘、`mc_bot_place` 放置、`mc_bot_equip` 切换物品
+- 依赖 `mineflayer` + `mineflayer-pathfinder`（已在 dependencies 中）
 
 ## ❓ 常见问题
 
