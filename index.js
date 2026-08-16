@@ -76,6 +76,7 @@ const DEFAULT_SETTINGS = {
   showTab: true, // when uiMode is 'tab', whether to show the Minecraft tab in the session
   theme: { preset: 'default', accent: '' }, // 'default' | 'light' | 'ocean' | 'end' | 'lava'; accent overrides the primary color
   dashscopeKey: '', // optional: override the DASHSCOPE_API_KEY from ~/.bashrc for mc_see
+  onboarded: false, // first-run welcome/guide shown until accepted
 }
 
 // ---------------------------------------------------------------------------
@@ -1029,7 +1030,7 @@ async function route(req, res) {
       case 'settings': {
         const body = await readBody(req)
         const patch = {}
-        for (const key of ['gameDir', 'javaPath', 'memoryMb', 'clientId', 'width', 'height', 'fullscreen', 'eulaAccepted', 'uiMode', 'showTab', 'theme', 'dashscopeKey']) {
+        for (const key of ['gameDir', 'javaPath', 'memoryMb', 'clientId', 'width', 'height', 'fullscreen', 'eulaAccepted', 'uiMode', 'showTab', 'theme', 'dashscopeKey', 'onboarded']) {
           if (body[key] !== undefined) patch[key] = body[key]
         }
         store.settings = { ...store.settings, ...patch }

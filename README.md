@@ -20,7 +20,8 @@
 - ✅ 一键安装：client jar + libraries（natives 自动解压）+ assets，断点续传（已存在且大小匹配的文件跳过）
 - ✅ 启动游戏：按版本 JSON 组装 Java 命令（自动展开 `${natives_directory}`、`${classpath}` 等占位符）
 - ✅ Java 自动探测：优先使用官方启动器下载的 `~/.minecraft/runtime/**/bin/java`，其次 PATH 中的 `java`
-- ✅ Microsoft 账号登录：**浏览器授权码登录（PKCE，自动回调，推荐）** + 设备码登录（备选）
+- ✅ Microsoft 账号登录：**设备码流程（默认，可靠，推荐）**；浏览器授权码登录（PKCE）需额外配置回调地址，作为高级备选
+- ✅ **中文界面 + 新手引导**：默认中文；首次使用弹出四步引导（配置 client id → 登录 → 选版本安装 → 开始游戏）
 - ✅ **Agent 工具集**：`mc_list_versions` / `mc_install` / `mc_launch` / `mc_kill` / `mc_logs` / `mc_status`——AI 通过对话操作启动器
 - ✅ **AI 崩溃分析**：`mc_analyze_crash` 读取崩溃报告与日志，交给 LLM 诊断并给修复建议
 - ✅ **AI 游戏助手**：`mc_world_info`（存档时长/死亡）、`mc_mods`（模组清单）、`mc_version_advice`（版本建议）
