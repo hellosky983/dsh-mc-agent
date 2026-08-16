@@ -1188,6 +1188,11 @@ async function mcControl(action, opts = {}) {
     await sh('xdotool', ['mousemove_relative', '--', String(dx), String(dy)])
     return { ok: true, action: `look dx=${dx} dy=${dy}` }
   }
+  if (action === 'type') {
+    const text = String(opts.text || '')
+    await sh('xdotool', ['type', '--window', win, '--delay', '30', '--', text])
+    return { ok: true, action: 'type', text }
+  }
   const key = KEYMAP[action] || action
   const holdMs = (action === 'forward' || action === 'back' || action === 'left' || action === 'right')
     ? (Number(opts.ms) || 400) : 90
@@ -1330,6 +1335,28 @@ async function botChat(msg) {
   if (!b) return { ok: false, error: 'bot not connected' }
   b.chat(String(msg))
   return { ok: true }
+}
+
+// Automatically open the single-player world to LAN via keyboard navigation:
+// Esc -> menu, Down x3 to "Open to LAN" (Back to Game / Advancements /
+// Statistics / Open to LAN), Enter, then Enter to confirm the dialog.
+async function openLan() {
+  const win = await findGameWindow()
+  if (!win) return { ok: false, error: 'no Minecraft window found (start the game first)' }
+  await sh('xdotool', ['windowactivate', '--sync', win])
+  await sh('xdotool', ['windowfocus', '--sync', win])
+  await sleep(200)
+  await sh('xdotool', ['key', '--window', win, 'Escape'])
+  await sleep(450)
+  for (let i = 0; i < 3; i++) { await sh('xdotool', ['key', '--window', win, 'Down']); await sleep(110) }
+  await sh('xdotool', ['key', '--window', win, 'Return'])
+  await sleep(500)
+  await sh('xdotool', ['key', '--window', win, 'Return'])
+  await sleep(700)
+  const port = lanPortFromLogs()
+  if (port) return { ok: true, port }
+  // fallback: try reading the latest log line mentioning a port
+  return { ok: false, error: 'could not detect LAN port — open LAN manually (Esc → Open to LAN) or check the game chat for the port', port }
 }
 
 function readCrashReport() {
@@ -1721,6 +1748,7 @@ export function apply(ctx) {
       ms: { type: 'number', description: 'Hold time in ms for movement keys (default 400)' },
       dx: { type: 'number', description: 'Horizontal mouse delta for look' },
       dy: { type: 'number', description: 'Vertical mouse delta for look' },
+      text: { type: 'string', description: 'Text to type (for action "type", e.g. a chat command)' },
     },
     output: { schema: { type: 'object', additionalProperties: true, properties: {} }, render: toolResult() },
     async execute(args) {
@@ -1825,6 +1853,16 @@ export function apply(ctx) {
     async execute() {
       if (bot) { try { bot.end() } catch { /* ignore */ } bot = null }
       return { ok: true }
+    },
+  }))
+
+  tools.register(defineTool({
+    name: 'mc_open_lan',
+    description: 'Automatically open the single-player world to LAN via keyboard navigation (Esc → Open to LAN → confirm) and return the LAN port. Use before mc_bot_connect so the bot can join.',
+    parameters: {},
+    output: { schema: { type: 'object', additionalProperties: true, properties: {} }, render: toolResult() },
+    async execute() {
+      return openLan()
     },
   }))
 }
