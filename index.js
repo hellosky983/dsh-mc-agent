@@ -1550,14 +1550,6 @@ async function autonomyTick() {
   }
 }
 
-function nearbyHostile(b) {
-  try {
-    const e = b.nearestEntity((en) => en.type === 'mob' && en.mobType === 'Hostile')
-    if (e && e.position && b.entity && e.position.distanceTo(b.entity.position) < 8) return e
-  } catch { /* ignore */ }
-  return null
-}
-
 async function eatFood(b) {
   try {
     const food = b.inventory.items().find((i) => /cooked_beef|beef|porkchop|cooked_porkchop|bread|apple|potato|chicken|cooked_chicken|mutton|cooked_mutton|salmon|cooked_salmon|cod|cooked_cod|carrot|melon|golden_apple/.test(i.name))
@@ -1566,16 +1558,6 @@ async function eatFood(b) {
       await b.consume()
       pushLog(`[autonomy] 进食 ${food.name}`)
     }
-  } catch { /* ignore */ }
-}
-
-async function flee(b, hostile) {
-  try {
-    const away = b.entity.position.clone().subtract(hostile.position)
-    away.y = 0
-    if (away.x === 0 && away.z === 0) away.x = 1
-    const target = b.entity.position.clone().add(away.normalize().multiply(12))
-    b.pathfinder.setGoal(new _goals.GoalNear(target.x, target.y, target.z, 2))
   } catch { /* ignore */ }
 }
 
@@ -2427,7 +2409,7 @@ export function apply(ctx) {
   // ---- autonomy tools: the bot survives/plays on its own without LLM per-step ----
   tools.register(defineTool({
     name: 'mc_autonomy_start',
-    description: 'Start autonomous mode: the bot continuously plays on its own (eats when hungry, flees when hurt, gathers resources) WITHOUT needing the model to decide every step — smooth and human-like. The model only sets a task and lets the engine run it.',
+    description: 'Start autonomous mode: the bot continuously plays on its own (eats when hungry, roams the map, gathers resources) WITHOUT needing the model to decide every step — smooth and human-like. The model only sets a task and lets the engine run it.',
     parameters: {
       task: { type: 'string', description: 'Initial task, e.g. "gather oak_log" or "explore". Defaults to gathering oak_log.' },
     },
