@@ -1256,7 +1256,9 @@ async function botConnect(port, username) {
   b.on('kicked', (r) => { pushLog(`[bot] kicked: ${r}`) })
   b.on('end', () => { if (bot === b) { bot = null; stopAutonomy() } })
   b.on('chat', (username, message) => {
-    if (username === b.username) return
+    // ignore the bot's own echoed chat (username shows as "Bot"/"DSH-Bot"),
+    // and any other bot-named entity, so the bot never replies to itself
+    if (username === b.username || /bot/i.test(username)) return
     pushLog(`[social] ${username}: ${message}`)
     onPlayerChat(username, message)
   })
@@ -1492,6 +1494,11 @@ const autonomy = {
 // any player or model input, like a survivor working through its needs.
 const SURVIVAL_TASKS = [
   { type: 'gather', target: 'oak_log', label: '砍树收集木材' },
+  { type: 'gather', target: 'deepslate', label: '挖深板岩' },
+  { type: 'gather', target: 'tuff', label: '挖凝灰岩' },
+  { type: 'gather', target: 'deepslate_coal_ore', label: '挖深层煤矿' },
+  { type: 'gather', target: 'deepslate_iron_ore', label: '挖深层铁矿' },
+  { type: 'gather', target: 'deepslate_lapis_ore', label: '挖青金石矿' },
   { type: 'gather', target: 'stone', label: '挖石头' },
   { type: 'gather', target: 'coal_ore', label: '挖煤矿' },
   { type: 'gather', target: 'iron_ore', label: '挖铁矿' },
