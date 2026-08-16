@@ -50,7 +50,7 @@ function extractZip(zipPath, destDir) {
 }
 
 export const name = 'dsh-mc-launcher'
-export const inject = ['webServer', 'tools']
+export const inject = ['webServer', 'tools', 'systemPrompt']
 
 // ---------------------------------------------------------------------------
 // paths & persistence
@@ -1247,6 +1247,29 @@ function botReq() {
   return bot
 }
 
+// Compact live-state snapshot injected into the model context each step, so
+// the agent "sees" the game directly without calling mc_bot_state every time.
+function formatLiveState() {
+  const b = botReq()
+  if (!b || !b.entity || !b.entity.position) return ''
+  const p = b.entity.position
+  const lines = []
+  lines.push(`位置=(${Math.round(p.x)}, ${Math.round(p.y)}, ${Math.round(p.z)})`)
+  if (b.health !== undefined) lines.push(`血量=${b.health} 饥饿=${b.food}`)
+  if (b.heldItem) lines.push(`手持=${b.heldItem.name}×${b.heldItem.count}`)
+  const inv = b.inventory ? b.inventory.items().slice(0, 9).map((i) => `${i.name}×${i.count}`).join(', ') : ''
+  if (inv) lines.push(`快捷栏=[${inv}]`)
+  if (_Vec3) {
+    try {
+      const below = b.blockAt(new _Vec3(Math.floor(p.x), Math.floor(p.y) - 1, Math.floor(p.z)))
+      if (below && below.name) lines.push(`脚下=${below.name}`)
+      const ahead = b.blockAt(new _Vec3(Math.floor(p.x), Math.floor(p.y), Math.floor(p.z)))
+      if (ahead && ahead.name && ahead.name !== 'air') lines.push(`前方=${ahead.name}`)
+    } catch { /* ignore */ }
+  }
+  return '[Minecraft 机器人实时状态]\n' + lines.join('\n')
+}
+
 function botState() {
   const b = botReq()
   if (!b) return { ok: false, error: 'bot not connected — call mc_bot_connect first (game must be open to LAN)' }
@@ -1561,6 +1584,16 @@ export function apply(ctx) {
     },
   })
   ctx.effect(() => { disposeOauthStart(); disposeOauthCb() })
+
+  // ---- live game state auto-injected into the model context each step ----
+  // The agent "sees" the bot's position/health/inventory directly every turn,
+  // no need to call mc_bot_state just to check the situation.
+  const disposeLiveContext = ctx.systemPrompt.context({
+    name: 'minecraft-live-state',
+    order: 250,
+    text: () => formatLiveState(),
+  })
+  ctx.effect(() => disposeLiveContext)
 
   // ---- agent tools: bring the launcher into DSH conversations ----
   const tools = ctx.tools
