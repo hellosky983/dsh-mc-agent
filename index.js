@@ -1543,11 +1543,13 @@ async function runTask(b) {
     autonomy.taskIndex++
     autonomy.task = { type: t.type, target: t.target, count: 8, done: false }
     pushLog(`[autonomy] 自主目标：${t.label}`)
+    maybeSpeak(`我现在去${t.label}了`)
   }
   const t = autonomy.task
   if (t.done) {
     autonomy.stats.tasksDone++
     pushLog(`[autonomy] 任务完成：${t.type} ${t.target || ''}（已累计完成 ${autonomy.stats.tasksDone} 个目标）`)
+    maybeSpeak(t.type === 'explore' ? '我逛完一圈了，看看接下来做点啥' : `${t.target || '这个'}我采够了`)
     autonomy.task = null
     return
   }
@@ -1578,6 +1580,9 @@ async function gatherTask(b, t) {
       await b.dig(block)
       autonomy.stats.blocksMined++
       pushLog(`[autonomy] 挖了 ${block.name}`)
+      if (/ore|diamond|emerald|gold/.test(block.name)) {
+        maybeSpeak(`我挖到 ${block.name} 了！`)
+      }
     } catch (e) {
       pushLog(`[autonomy] 挖掘失败: ${e.message}`)
     }
@@ -1597,6 +1602,19 @@ async function exploreTask(b, t) {
 
 // ---- social layer: the bot chats back like a friend, via the default model ----
 const SOCIAL_SYSTEM_PROMPT = '你是 Minecraft 世界里玩家的 AI 伙伴。你正在这个世界里生存（采集、探索、建造）。玩家会通过聊天和你说话。请像朋友一样自然、简短地回应（一般 1-2 句话，30 字以内），语气轻松友好，必要时可以报告你正在做的事（如"我在砍树""我刚挖到煤"）。不要用列表或格式，就像真人聊天。'
+
+// Command parser: the player can direct the AI from in-game chat, not just chat.
+const COMMAND_SYSTEM = '你是 Minecraft 世界里玩家的 AI 伙伴。玩家通过游戏聊天发消息。请判断意图，只返回一行 JSON（不要任何其他文字）：\n1. 若玩家让你做某件事（砍树/挖矿/采集/探索/过来/建房子/去找X），返回 {"action":"task","task":"gather <英文方块名> 或 explore","reply":"一句简短确认"}（方块名用英文，如 oak_log/stone/coal_ore/iron_ore；"过来/找我"用 explore）。\n2. 若是闲聊、问候、提问，返回 {"action":"chat","reply":"简短自然回复，30字内"}。'
+
+let _lastSpeak = 0
+function maybeSpeak(text) {
+  if (!bot || !text) return
+  const now = Date.now()
+  if (now - _lastSpeak < 20000) return // throttle: at most once per 20s
+  _lastSpeak = now
+  try { bot.chat(text) } catch { /* ignore */ }
+  pushLog(`[autonomy] 主动说话: ${text}`)
+}
 
 function userMessage(text) {
   return {
@@ -1651,12 +1669,33 @@ async function onPlayerChat(username, message) {
   try {
     const b = bot
     if (!b) return
+    // 1. instant rule-based replies for common greetings
     const quick = quickReply(message)
-    if (quick) {
-      b.chat(quick)
-      pushLog(`[social] 快速回复 ${username}: ${quick}`)
-      return
+    if (quick) { b.chat(quick); pushLog(`[social] 快速回复 ${username}: ${quick}`); return }
+    // 2. parse intent: is it a task command or small talk?
+    const parsed = await llmChat(COMMAND_SYSTEM, `玩家 ${username} 说：${message}`, 250)
+    if (parsed) {
+      const m = parsed.match(/\{[\s\S]*\}/)
+      if (m) {
+        try {
+          const obj = JSON.parse(m[0])
+          if (obj.action === 'task' && obj.task) {
+            const tm = String(obj.task).match(/^(gather|explore)(?:\s+([a-z0-9_]+))?/)
+            if (tm) {
+              if (!autonomy.enabled) startAutonomy()
+              autonomy.task = { type: tm[1], target: tm[1] === 'gather' ? (tm[2] || 'oak_log') : undefined, count: 8, done: false }
+              pushLog(`[social] ${username} 指令 → 任务: ${tm[1]} ${tm[2] || ''}`)
+              b.chat(obj.reply || '\u597d\u7684\uff0c\u6211\u8fd9\u5c31\u53bb\uff01')
+            } else {
+              b.chat(obj.reply || parsed)
+            }
+            return
+          }
+          if (obj.action === 'chat' && obj.reply) { b.chat(obj.reply); return }
+        } catch { /* fall through to social reply */ }
+      }
     }
+    // 3. fallback: social LLM reply
     const p = b.entity && b.entity.position
     const loc = p ? `（我当前在 (${Math.round(p.x)}, ${Math.round(p.y)}, ${Math.round(p.z)})）` : ''
     const reply = await llmChat(SOCIAL_SYSTEM_PROMPT, `玩家 ${username} 说：${message}\n${loc}`, 120)
