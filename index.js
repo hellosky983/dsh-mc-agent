@@ -1204,7 +1204,7 @@ async function mcControl(action, opts = {}) {
 
 // ---- Mineflayer bot: direct game-data access + protocol-level control ----
 let bot = null
-let _mf = null, _pf = null, _Vec3 = null
+let _mf = null, _pf = null, _Vec3 = null, _goals = null
 
 async function loadBotLibs() {
   if (!_mf || !_pf || !_Vec3) {
@@ -1212,8 +1212,9 @@ async function loadBotLibs() {
     const vec3mod = await import('vec3')
     _Vec3 = vec3mod.default || vec3mod
     _pf = await import('mineflayer-pathfinder')
+    _goals = _pf.goals
   }
-  return { mineflayer: _mf, pathfinder: _pf.pathfinder, Movements: _pf.Movements, Vec3: _Vec3 }
+  return { mineflayer: _mf, pathfinder: _pf.pathfinder, Movements: _pf.Movements, Vec3: _Vec3, goals: _goals }
 }
 
 function lanPortFromLogs() {
@@ -1238,7 +1239,7 @@ async function botConnect(port, username) {
   b.loadPlugin(pathfinder)
   b.pathfinder.setMovements(new Movements(b))
   b.on('kicked', (r) => { pushLog(`[bot] kicked: ${r}`) })
-  b.on('end', () => { if (bot === b) bot = null })
+  b.on('end', () => { if (bot === b) { bot = null; stopAutonomy() } })
   bot = b
   return { ok: true, username: b.username, port: p }
 }
@@ -1393,6 +1394,139 @@ async function botRunScript(actions) {
   }
   const done = results.filter((r) => r.ok === true).length
   return { ok: true, done, total: actions.length, results }
+}
+
+// ---- autonomy engine: LLM-free reflective loop for smooth, continuous play ----
+const autonomy = {
+  enabled: false,
+  task: null,           // { type: 'gather'|'explore', target?, count?, done }
+  stats: { tasksDone: 0, blocksMined: 0, startedAt: 0 },
+  _busy: false,
+  _timer: null,
+}
+
+function startAutonomy() {
+  if (autonomy._timer) return { ok: true, already: true }
+  autonomy.enabled = true
+  autonomy.stats.startedAt = Date.now()
+  autonomy._timer = setInterval(autonomyTick, 400)
+  pushLog('[autonomy] 自主模式已开启')
+  return { ok: true }
+}
+
+function stopAutonomy() {
+  autonomy.enabled = false
+  if (autonomy._timer) { clearInterval(autonomy._timer); autonomy._timer = null }
+  autonomy.task = null
+  pushLog('[autonomy] 自主模式已停止')
+  return { ok: true }
+}
+
+function autonomyStatus() {
+  return {
+    enabled: autonomy.enabled,
+    task: autonomy.task,
+    stats: autonomy.stats,
+    botConnected: !!bot,
+  }
+}
+
+async function autonomyTick() {
+  if (!autonomy.enabled || !bot || autonomy._busy) return
+  autonomy._busy = true
+  try {
+    const b = bot
+    // reflection: eat when hungry
+    if (b.food !== undefined && b.food < 15) {
+      await eatFood(b)
+      return
+    }
+    // reflection: flee when hurt and a hostile mob is close
+    const hostile = nearbyHostile(b)
+    if (hostile && b.health !== undefined && b.health < 15) {
+      await flee(b, hostile)
+      return
+    }
+    await runTask(b)
+  } catch (e) {
+    // keep the loop alive
+  } finally {
+    autonomy._busy = false
+  }
+}
+
+function nearbyHostile(b) {
+  try {
+    const e = b.nearestEntity((en) => en.type === 'mob' && en.mobType === 'Hostile')
+    if (e && e.position && b.entity && e.position.distanceTo(b.entity.position) < 8) return e
+  } catch { /* ignore */ }
+  return null
+}
+
+async function eatFood(b) {
+  try {
+    const food = b.inventory.items().find((i) => /cooked_beef|beef|porkchop|cooked_porkchop|bread|apple|potato|chicken|cooked_chicken|mutton|cooked_mutton|salmon|cooked_salmon|cod|cooked_cod|carrot|melon|golden_apple/.test(i.name))
+    if (food) {
+      await b.equip(food, 'hand')
+      await b.consume()
+      pushLog(`[autonomy] 进食 ${food.name}`)
+    }
+  } catch { /* ignore */ }
+}
+
+async function flee(b, hostile) {
+  try {
+    const away = b.entity.position.clone().subtract(hostile.position)
+    away.y = 0
+    if (away.x === 0 && away.z === 0) away.x = 1
+    const target = b.entity.position.clone().add(away.normalize().multiply(12))
+    b.pathfinder.setGoal(new _goals.GoalNear(target.x, target.y, target.z, 2))
+  } catch { /* ignore */ }
+}
+
+async function runTask(b) {
+  if (!autonomy.task) {
+    // default: gather wood
+    autonomy.task = { type: 'gather', target: 'oak_log', count: 8, done: false }
+  }
+  const t = autonomy.task
+  if (t.done) {
+    autonomy.stats.tasksDone++
+    pushLog(`[autonomy] 任务完成：${t.type} ${t.target || ''}`)
+    autonomy.task = null
+    return
+  }
+  if (t.type === 'gather') await gatherTask(b, t)
+  else if (t.type === 'explore') await exploreTask(b, t)
+  else autonomy.task = null
+}
+
+async function gatherTask(b, t) {
+  let block = null
+  try {
+    block = await b.findBlock({ matching: (blk) => blk.name === t.target, maxDistance: 24, count: 1 })
+  } catch { return }
+  if (!block) { t.done = true; return }
+  const dist = block.position.distanceTo(b.entity.position)
+  if (dist > 4) {
+    b.pathfinder.setGoal(new _goals.GoalNear(block.position.x, block.position.y, block.position.z, 2))
+  } else {
+    try {
+      await b.dig(block)
+      autonomy.stats.blocksMined++
+    } catch { /* ignore */ }
+  }
+}
+
+async function exploreTask(b, t) {
+  const p = b.entity.position
+  const ang = Math.random() * Math.PI * 2
+  const r = 15 + Math.random() * 15
+  const tx = Math.floor(p.x + Math.cos(ang) * r)
+  const tz = Math.floor(p.z + Math.sin(ang) * r)
+  b.pathfinder.setGoal(new _goals.GoalNear(tx, p.y, tz, 2))
+  await sleep(2500)
+  t.done = true
 }
 
 // Automatically open the single-player world to LAN via keyboard navigation:
@@ -1945,6 +2079,58 @@ export function apply(ctx) {
       let actions
       try { actions = JSON.parse(args.actions) } catch { return { ok: false, error: 'actions must be a JSON-encoded array' } }
       return botRunScript(actions)
+    },
+  }))
+
+  // ---- autonomy tools: the bot survives/plays on its own without LLM per-step ----
+  tools.register(defineTool({
+    name: 'mc_autonomy_start',
+    description: 'Start autonomous mode: the bot continuously plays on its own (eats when hungry, flees when hurt, gathers resources) WITHOUT needing the model to decide every step — smooth and human-like. The model only sets a task and lets the engine run it.',
+    parameters: {
+      task: { type: 'string', description: 'Initial task, e.g. "gather oak_log" or "explore". Defaults to gathering oak_log.' },
+    },
+    output: { schema: { type: 'object', additionalProperties: true, properties: {} }, render: toolResult() },
+    async execute(args) {
+      const r = startAutonomy()
+      if (args && args.task) {
+        const m = String(args.task).match(/^(gather|explore)(?:\s+(\w+))?/)
+        if (m) {
+          autonomy.task = { type: m[1], target: m[1] === 'gather' ? (m[2] || 'oak_log') : undefined, count: 8, done: false }
+        }
+      }
+      return r
+    },
+  }))
+
+  tools.register(defineTool({
+    name: 'mc_autonomy_stop',
+    description: 'Stop autonomous mode.',
+    parameters: {},
+    output: { schema: { type: 'object', additionalProperties: true, properties: {} }, render: toolResult() },
+    async execute() { return stopAutonomy() },
+  }))
+
+  tools.register(defineTool({
+    name: 'mc_autonomy_status',
+    description: 'Get autonomous mode status: enabled, current task, and stats (tasks done, blocks mined).',
+    parameters: {},
+    output: { schema: { type: 'object', additionalProperties: true, properties: {} }, render: toolResult() },
+    async execute() { return autonomyStatus() },
+  }))
+
+  tools.register(defineTool({
+    name: 'mc_autonomy_task',
+    description: 'Set the current autonomous task while the engine keeps running it smoothly. task: "gather <block>" (e.g. gather stone, gather coal_ore) or "explore".',
+    parameters: {
+      task: { type: 'string', required: true, description: 'e.g. "gather oak_log", "gather stone", "explore"' },
+    },
+    output: { schema: { type: 'object', additionalProperties: true, properties: {} }, render: toolResult() },
+    async execute(args) {
+      if (!autonomy.enabled) return { ok: false, error: 'autonomy not started — call mc_autonomy_start first' }
+      const m = String(args.task).match(/^(gather|explore)(?:\s+(\w+))?/)
+      if (!m) return { ok: false, error: 'task must be "gather <block>" or "explore"' }
+      autonomy.task = { type: m[1], target: m[1] === 'gather' ? (m[2] || 'oak_log') : undefined, count: 8, done: false }
+      return { ok: true, task: autonomy.task }
     },
   }))
 }
