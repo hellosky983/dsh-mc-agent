@@ -1097,10 +1097,14 @@ async function findGameWindow() {
 
 async function gameGeometry(winId) {
   const r = await sh('xdotool', ['getwindowgeometry', '--shell', winId])
-  const g = { x: 0, y: 0, w: 1280, h: 720 }
+  const g = { x: 0, y: 0, w: 854, h: 480 }
   for (const line of r.stdout.split('\n')) {
-    const m = line.match(/^(X|Y|WIDTH|HEIGHT)=(\d+)/)
-    if (m) g[m[1] === 'X' ? 'x' : m[1] === 'Y' ? 'y' : m[1].toLowerCase()] = Number(m[2])
+    const m = line.match(/^(X|Y|WIDTH|HEIGHT)=(-?\d+)/)
+    if (!m) continue
+    if (m[1] === 'X') g.x = Number(m[2])
+    else if (m[1] === 'Y') g.y = Number(m[2])
+    else if (m[1] === 'WIDTH') g.w = Number(m[2])
+    else if (m[1] === 'HEIGHT') g.h = Number(m[2])
   }
   return g
 }
