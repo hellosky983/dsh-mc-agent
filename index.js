@@ -1625,22 +1625,21 @@ async function gatherTask(b, t) {
     block = await withTimeout(b.findBlock({ matching: (blk) => blk.name === t.target, maxDistance: 24, count: 1 }), 5000, null)
   } catch { block = null }
   if (!block) {
-    // nothing nearby: wander a bit to search, don't just give up
+    // nothing nearby: wander to search, don't just give up
     t.missCount = (t.missCount || 0) + 1
     if (t.missCount > 8) {
       t.done = true
       pushLog(`[autonomy] 找不到 ${t.target}（${t.missCount} 次），切换目标`)
     } else {
-      const p = b.entity.position
+      // direct walk + jump toward a random direction (pathfinder is unreliable underground)
       const ang = Math.random() * Math.PI * 2
-      const tx = Math.floor(p.x + Math.cos(ang) * 18)
-      const tz = Math.floor(p.z + Math.sin(ang) * 18)
-      const key = `${tx},${p.y},${tz}`
-      if (autonomy._moveTarget !== key) {
-        autonomy._moveTarget = key
-        b.pathfinder.setGoal(new _goals.GoalNear(tx, p.y, tz, 2))
-        pushLog(`[autonomy] 附近无 ${t.target}，四处寻找(${t.missCount}/8)`)
-      }
+      await b.look(ang, 0, true).catch(() => {})
+      b.setControlState('forward', true)
+      b.setControlState('jump', true)
+      await sleep(500)
+      b.setControlState('jump', false)
+      await sleep(700)
+      b.setControlState('forward', false)
     }
     return
   }
@@ -1671,11 +1670,15 @@ async function gatherTask(b, t) {
 async function exploreTask(b, t) {
   const p = b.entity.position
   const ang = Math.random() * Math.PI * 2
-  const r = 15 + Math.random() * 15
+  const r = 25 + Math.random() * 25
   const tx = Math.floor(p.x + Math.cos(ang) * r)
   const tz = Math.floor(p.z + Math.sin(ang) * r)
-  b.pathfinder.setGoal(new _goals.GoalNear(tx, p.y, tz, 2))
-  await sleep(2500)
+  b.pathfinder.setGoal(new _goals.GoalNear(tx, p.y, tz, 3))
+  // wait until the pathfinder actually arrives (or 12s timeout), so it walks farther
+  await new Promise((resolve) => {
+    const timer = setTimeout(resolve, 12000)
+    b.once('goal_reached', () => { clearTimeout(timer); resolve() })
+  })
   t.done = true
 }
 
