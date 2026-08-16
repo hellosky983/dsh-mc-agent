@@ -1090,6 +1090,7 @@ function sh(cmd, args, opts = {}) {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+const withTimeout = (promise, ms, fallback = null) => Promise.race([promise, sleep(ms).then(() => fallback)])
 
 async function findGameWindow() {
   for (const pat of ['Minecraft', 'minecraft', 'Java']) {
@@ -1526,20 +1527,21 @@ function autonomyStatus() {
 async function autonomyTick() {
   if (!autonomy.enabled || !bot || autonomy._busy) return
   autonomy._busy = true
+  autonomy._busySince = Date.now()
   try {
     const b = bot
     // reflection: eat when hungry
     if (b.food !== undefined && b.food < 15) {
-      await eatFood(b)
+      await withTimeout(eatFood(b), 4000)
       return
     }
     // reflection: flee when hurt and a hostile mob is close
     const hostile = nearbyHostile(b)
     if (hostile && b.health !== undefined && b.health < 15) {
-      await flee(b, hostile)
+      await withTimeout(flee(b, hostile), 3000)
       return
     }
-    await runTask(b)
+    await withTimeout(runTask(b), 8000)
   } catch (e) {
     // keep the loop alive
   } finally {
@@ -1603,9 +1605,29 @@ async function gatherTask(b, t) {
   if (b.pathfinder.isMoving && b.pathfinder.isMoving()) return
   let block = null
   try {
-    block = await b.findBlock({ matching: (blk) => blk.name === t.target, maxDistance: 24, count: 1 })
-  } catch { return }
-  if (!block) { t.done = true; pushLog(`[autonomy] 附近没有 ${t.target}，切换目标`); return }
+    block = await withTimeout(b.findBlock({ matching: (blk) => blk.name === t.target, maxDistance: 24, count: 1 }), 5000, null)
+  } catch { block = null }
+  if (!block) {
+    // nothing nearby: wander a bit to search, don't just give up
+    t.missCount = (t.missCount || 0) + 1
+    if (t.missCount > 8) {
+      t.done = true
+      pushLog(`[autonomy] 找不到 ${t.target}（${t.missCount} 次），切换目标`)
+    } else {
+      const p = b.entity.position
+      const ang = Math.random() * Math.PI * 2
+      const tx = Math.floor(p.x + Math.cos(ang) * 18)
+      const tz = Math.floor(p.z + Math.sin(ang) * 18)
+      const key = `${tx},${p.y},${tz}`
+      if (autonomy._moveTarget !== key) {
+        autonomy._moveTarget = key
+        b.pathfinder.setGoal(new _goals.GoalNear(tx, p.y, tz, 2))
+        pushLog(`[autonomy] 附近无 ${t.target}，四处寻找(${t.missCount}/8)`)
+      }
+    }
+    return
+  }
+  t.missCount = 0
   const dist = block.position.distanceTo(b.entity.position)
   if (dist > 3) {
     const key = `${block.position.x},${block.position.y},${block.position.z}`
@@ -1617,7 +1639,7 @@ async function gatherTask(b, t) {
   } else {
     autonomy._moveTarget = null
     try {
-      await b.dig(block)
+      await withTimeout(b.dig(block), 4000)
       autonomy.stats.blocksMined++
       pushLog(`[autonomy] 挖了 ${block.name}`)
       if (/ore|diamond|emerald|gold/.test(block.name)) {
@@ -1692,7 +1714,7 @@ let _replying = false
 
 // instant rule-based replies for common greetings so chat feels snappy
 const QUICK_REPLIES = [
-  { re: /^(你好|您好|在吗|在不在|hi|hello|hey|嗨|哈喽)/i, replies: ['我在呢！', '你好呀～', '在的，怎么啦？', '嗨！我在'] },
+  { re: /^(你好|您好|在吗|在不在|hi|hello|hey|嗨|哈喽|nihao|ni hao)/i, replies: ['我在呢！', '你好呀～', '在的，怎么啦？', '嗨！我在'] },
   { re: /(干嘛|做什么|忙什么|在干啥)/, replies: ['在附近采集资源呢', '正在砍树，攒点木头', '四处逛逛看看有没有矿'] },
   { re: /(谢谢|thanks|thank you|谢了|多谢)/i, replies: ['不客气！', '应该的～', '小事儿！'] },
   { re: /(在哪|位置|坐标)/, replies: ['我就在你附近，看地图上的蓝点'] },
@@ -1728,7 +1750,7 @@ async function onPlayerChat(username, message) {
     const quick = quickReply(message)
     if (quick) { b.chat(quick); pushLog(`[social] 快速回复 ${username}: ${quick}`); return }
     // 2. parse intent: is it a task command or small talk?
-    const parsed = await llmChat(COMMAND_SYSTEM, `玩家 ${username} 说：${message}`, 250)
+    const parsed = await withTimeout(llmChat(COMMAND_SYSTEM, `玩家 ${username} 说：${message}`, 250), 10000, null)
     if (parsed) {
       const m = parsed.match(/\{[\s\S]*\}/)
       if (m) {
@@ -1753,13 +1775,15 @@ async function onPlayerChat(username, message) {
     // 3. fallback: social LLM reply
     const p = b.entity && b.entity.position
     const loc = p ? `（我当前在 (${Math.round(p.x)}, ${Math.round(p.y)}, ${Math.round(p.z)})）` : ''
-    const reply = await llmChat(SOCIAL_SYSTEM_PROMPT, `玩家 ${username} 说：${message}\n${loc}`, 120)
+    const reply = await withTimeout(llmChat(SOCIAL_SYSTEM_PROMPT, `玩家 ${username} 说：${message}\n${loc}`, 120), 10000, null)
     if (reply) {
       b.chat(reply)
       pushLog(`[social] 回复 ${username}: ${reply}`)
     }
   } catch (e) { /* ignore */ }
-  _replying = false
+  finally {
+    _replying = false
+  }
 }
 
 // Automatically open the single-player world to LAN via keyboard navigation:
