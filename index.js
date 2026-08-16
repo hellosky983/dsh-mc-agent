@@ -1587,7 +1587,18 @@ async function flee(b, hostile) {
 
 async function runTask(b) {
   if (!autonomy.task) {
-    // pick the next self-chosen survival goal
+    // 1. unified LLM decision (task + speech) based on real state
+    const d = await llmDecideNextTask()
+    if (d && d.task) {
+      const tm = String(d.task).match(/^(gather|explore|idle)(?:\s+([a-z0-9_]+))?/)
+      if (tm && tm[1] !== 'idle') {
+        autonomy.task = { type: tm[1], target: tm[1] === 'gather' ? (tm[2] || 'deepslate') : undefined, count: 8, done: false }
+        pushLog(`[autonomy] LLM 决策：${d.task}`)
+        if (d.say) { try { b.chat(d.say) } catch { /* ignore */ }; pushLog(`[autonomy] 说话: ${d.say}`) }
+        return
+      }
+    }
+    // 2. fallback: self-chosen survival goal
     const t = SURVIVAL_TASKS[autonomy.taskIndex % SURVIVAL_TASKS.length]
     autonomy.taskIndex++
     autonomy.task = { type: t.type, target: t.target, count: 8, done: false }
@@ -1598,7 +1609,6 @@ async function runTask(b) {
   if (t.done) {
     autonomy.stats.tasksDone++
     pushLog(`[autonomy] 任务完成：${t.type} ${t.target || ''}（已累计完成 ${autonomy.stats.tasksDone} 个目标）`)
-    maybeSpeak(t.type === 'explore' ? '我逛完一圈了，看看接下来做点啥' : `${t.target || '这个'}我采够了`)
     autonomy.task = null
     return
   }
@@ -1675,6 +1685,28 @@ const SOCIAL_SYSTEM_PROMPT = '你是 Minecraft 世界里玩家的 AI 伙伴。�
 // Command parser: the player can direct the AI from in-game chat, not just chat.
 const COMMAND_SYSTEM = '你是 Minecraft 世界里玩家的 AI 伙伴。玩家通过游戏聊天发消息。请判断意图，只返回一行 JSON（不要任何其他文字）：\n1. 若玩家让你做某件事（砍树/挖矿/采集/探索/过来/建房子/去找X），返回 {"action":"task","task":"gather <英文方块名> 或 explore","reply":"一句简短确认"}（方块名用英文，如 oak_log/stone/coal_ore/iron_ore；"过来/找我"用 explore）。\n2. 若是闲聊、问候、提问，返回 {"action":"chat","reply":"简短自然回复，30字内"}。'
 
+// Unified decision: the model picks the next task AND what to say, based on
+// real game state, so the bot's words match its actions.
+const DECISION_SYSTEM = '你是 Minecraft 世界里自主生存的 AI 伙伴。根据给你的当前状态，决定下一步行动并说一句话。只返回一行 JSON（不要任何其他文字）：{"task":"gather <英文方块名> 或 explore 或 idle","say":"一句简短的话（30字内，说明你要做什么）"}。方块名用英文。要根据状态选：周围有矿石就挖矿，在地下就挖深板岩/凝灰岩，在地面就砍树或挖石头，没目标就 explore。说的话要和任务一致。'
+
+async function llmDecideNextTask() {
+  const b = bot
+  if (!b) return null
+  const s = botState()
+  const p = s.position
+  const near = (s.nearBlocks || []).map((x) => x.name).join(', ')
+  const inv = (s.inventory || []).slice(0, 9).map((i) => `${i.name}×${i.count}`).join(', ')
+  const summary = `位置=(${p ? `${p.x},${p.y},${p.z}` : '?'}) 血量=${s.health} 饥饿=${s.food} 手持=${s.heldItem ? s.heldItem.name : '无'} 快捷栏=[${inv}] 周围方块=[${near}] 已完成${autonomy.stats.tasksDone}个目标`
+  const parsed = await withTimeout(llmChat(DECISION_SYSTEM, summary, 600), 15000, null)
+  if (!parsed) return null
+  const m = parsed.match(/\{[\s\S]*\}/)
+  if (!m) return null
+  try {
+    const obj = JSON.parse(m[0])
+    return { task: obj.task, say: obj.say }
+  } catch { return null }
+}
+
 let _lastSpeak = 0
 function maybeSpeak(text) {
   if (!bot || !text) return
@@ -1699,6 +1731,7 @@ async function llmChat(system, userText, maxTokens = 200) {
   try {
     const sel = autonomyCtx.agentDefaultModel.currentSelection()
     let text = ''
+    let reasoning = ''
     for await (const chunk of autonomyCtx.llm.stream({
       provider: sel.provider,
       model: sel.model,
@@ -1707,9 +1740,14 @@ async function llmChat(system, userText, maxTokens = 200) {
       maxTokens,
     })) {
       if (chunk.type === 'text-delta') text += chunk.text
+      else if (chunk.type === 'reasoning-delta') reasoning += chunk.text
       else if (chunk.type === 'error' || chunk.type === 'aborted') { pushLog('[llm] chunk error: ' + JSON.stringify(chunk).slice(0, 200)); break }
     }
-    if (!text) pushLog('[llm] empty response')
+    if (!text) {
+      pushLog(`[llm] empty text (reasoning ${reasoning.length} chars)`)
+      if (reasoning) return reasoning.slice(0, 300)
+      return null
+    }
     return text.trim() || null
   } catch (e) {
     pushLog('[llm] error: ' + e.message)
