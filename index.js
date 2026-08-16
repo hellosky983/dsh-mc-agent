@@ -1223,7 +1223,7 @@ const botBus = {
 let chatResponder = null // (username, message) => boolean; true = companion handled it
 
 // ---- follow: the bot walks alongside the player (used by the companion) ----
-const follow = { active: false, target: null, distance: 3, timer: null, stuckTicks: 0, lastKey: '' }
+const follow = { active: false, target: null, distance: 3, timer: null, stuckTicks: 0, lastKey: '', _escaping: false }
 
 function nearestPlayer() {
   const b = bot
@@ -1277,9 +1277,23 @@ function stopFollow() {
   return { ok: true }
 }
 
-function followTick() {
+async function followTick() {
   if (!follow.active || !bot || !bot.entity) return
+  if (follow._escaping) return
   const b = bot
+  // survival first: don't burn in lava or drown in water while following the player
+  if (isInLava(b) || isInWater(b)) {
+    follow._escaping = true
+    try {
+      try { b.setControlState('forward', false) } catch { /* ignore */ }
+      try { b.setControlState('sprint', false) } catch { /* ignore */ }
+      if (isInLava(b)) await withTimeout(leaveLava(b), 3000)
+      else await withTimeout(swimToLand(b), 3000)
+    } catch { /* ignore */ } finally {
+      follow._escaping = false
+    }
+    return
+  }
   let target = follow.target ? playerPos(follow.target) : null
   if (!target) {
     const n = nearestPlayer()
