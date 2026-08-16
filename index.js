@@ -1542,6 +1542,11 @@ async function autonomyTick() {
       await withTimeout(eatFood(b), 4000)
       return
     }
+    // swim up when in water so the bot doesn't drown (survival, not avoidance)
+    if (isInWater(b)) {
+      await withTimeout(swimToLand(b), 3000)
+      return
+    }
     await withTimeout(runTask(b), 5000)
   } catch (e) {
     // keep the loop alive
@@ -1559,6 +1564,26 @@ async function eatFood(b) {
       pushLog(`[autonomy] 进食 ${food.name}`)
     }
   } catch { /* ignore */ }
+}
+
+function isInWater(b) {
+  try {
+    const p = b.entity.position
+    const blk = b.blockAt(new _Vec3(Math.floor(p.x), Math.floor(p.y + 0.4), Math.floor(p.z)))
+    return blk && (blk.name === 'water' || blk.name === 'flowing_water')
+  } catch { return false }
+}
+
+async function swimToLand(b) {
+  // swim up and toward a direction until out of water (not avoidance — avoid drowning)
+  const ang = Math.random() * Math.PI * 2
+  try { await b.look(ang, 0, true) } catch { /* ignore */ }
+  b.setControlState('forward', true)
+  b.setControlState('jump', true)
+  await sleep(700)
+  b.setControlState('jump', false)
+  await sleep(300)
+  b.setControlState('forward', false)
 }
 
 async function runTask(b) {
@@ -1597,8 +1622,17 @@ async function gatherTask(b, t) {
   // don't re-plan while already pathing to a target (this was the "bot won't move" bug)
   if (b.pathfinder.isMoving && b.pathfinder.isMoving()) return
   let block = null
+  const by = Math.floor(b.entity.position.y)
   try {
-    block = await withTimeout(b.findBlock({ matching: (blk) => blk.name === t.target, maxDistance: 24, count: 1 }), 5000, null)
+    block = await withTimeout(b.findBlock({
+      matching: (blk) => {
+        if (blk.name !== t.target) return false
+        // only target blocks the bot can actually reach (same height or below feet)
+        return blk.position.y <= by + 2 && blk.position.y >= by - 2
+      },
+      maxDistance: 20,
+      count: 1,
+    }), 5000, null)
   } catch { block = null }
   if (!block) {
     // nothing nearby: wander to search, don't just give up
@@ -1636,6 +1670,13 @@ async function gatherTask(b, t) {
   } else {
     b.setControlState('forward', false)
     try {
+      // equip the right tool (pickaxe for stone/ore, axe for wood)
+      const toolRe = /ore|stone|deepslate|tuff|granite|diorite|andesite|cobblestone/.test(block.name)
+        ? /pickaxe/ : (/log|wood|planks/.test(block.name) ? /axe/ : null)
+      if (toolRe) {
+        const tool = b.inventory.items().find((i) => toolRe.test(i.name))
+        if (tool) { try { await withTimeout(b.equip(tool, 'hand'), 2000) } catch { /* ignore */ } }
+      }
       await withTimeout(b.dig(block), 4000)
       autonomy.stats.blocksMined++
       pushLog(`[autonomy] 挖了 ${block.name}`)
