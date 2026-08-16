@@ -77,6 +77,8 @@ const DEFAULT_SETTINGS = {
   theme: { preset: 'default', accent: '' }, // 'default' | 'light' | 'ocean' | 'end' | 'lava'; accent overrides the primary color
   dashscopeKey: '', // optional: override the DASHSCOPE_API_KEY from ~/.bashrc for mc_see
   onboarded: false, // first-run welcome/guide shown until accepted
+  offlineMode: false, // OPTIONAL, off by default: play without signing in (for owners of a legitimately purchased copy only)
+  offlineName: 'Player',
 }
 
 // ---------------------------------------------------------------------------
@@ -161,6 +163,21 @@ function saveAccount() {
   } else {
     try { fs.unlinkSync(ACCOUNT_FILE) } catch { /* ignore */ }
   }
+}
+
+// Offline mode is OPTIONAL and off by default: only for owners of a
+// legitimately purchased copy who want to play without signing in.
+function effectiveAccount() {
+  if (store.account) return store.account
+  if (store.settings.offlineMode) {
+    return {
+      name: store.settings.offlineName || 'Player',
+      uuid: '00000000-0000-4000-8000-' + String(Math.floor(Math.random() * 1e12)).padStart(12, '0'),
+      accessToken: '0',
+      type: 'legacy',
+    }
+  }
+  return null
 }
 
 function loadGoals() {
@@ -978,8 +995,8 @@ async function route(req, res) {
         const java = await detectJava()
         store.javaInfo = java
         if (!java) return json(res, 500, { error: 'no Java runtime found' })
-        const account = store.account
-        if (!account) return json(res, 403, { error: 'not signed in — sign in with your Microsoft account (playing Minecraft requires a valid, legitimately purchased account)' })
+        const account = effectiveAccount()
+        if (!account) return json(res, 403, { error: 'not signed in — sign in with your Microsoft account, or enable offline mode (for owners of a legitimately purchased copy) in Settings' })
         const r = launch(id, account)
         json(res, 200, { ok: true, pid: r.pid })
         break
@@ -1030,7 +1047,7 @@ async function route(req, res) {
       case 'settings': {
         const body = await readBody(req)
         const patch = {}
-        for (const key of ['gameDir', 'javaPath', 'memoryMb', 'clientId', 'width', 'height', 'fullscreen', 'eulaAccepted', 'uiMode', 'showTab', 'theme', 'dashscopeKey', 'onboarded']) {
+        for (const key of ['gameDir', 'javaPath', 'memoryMb', 'clientId', 'width', 'height', 'fullscreen', 'eulaAccepted', 'uiMode', 'showTab', 'theme', 'dashscopeKey', 'onboarded', 'offlineMode', 'offlineName']) {
           if (body[key] !== undefined) patch[key] = body[key]
         }
         store.settings = { ...store.settings, ...patch }
@@ -1391,11 +1408,12 @@ export function apply(ctx) {
       const id = args.id || store.selected
       if (!id) return { ok: false, error: 'no version selected' }
       if (store.game.running) return { ok: false, error: 'game already running' }
-      if (!store.account) return { ok: false, error: 'not signed in — playing Minecraft requires a valid, legitimately purchased account' }
+      const account = effectiveAccount()
+      if (!account) return { ok: false, error: 'not signed in — sign in with your Microsoft account, or enable offline mode (for owners of a legitimately purchased copy)' }
       const java = await detectJava()
       store.javaInfo = java
       if (!java) return { ok: false, error: 'no Java runtime found' }
-      const r = launch(id, store.account)
+      const r = launch(id, account)
       return { ok: true, pid: r.pid, id }
     },
   }))
