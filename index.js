@@ -67,7 +67,7 @@ const DEFAULT_SETTINGS = {
   gameDir: path.join(HOME, '.minecraft'),
   javaPath: '',
   memoryMb: 2048,
-  clientId: '', // register your own Azure app; see README (using a third-party client id is not allowed by Microsoft terms)
+  clientId: '6a3728d6-27a3-4180-99bb-479895b8f88e', // HMCL's public client id (open-source launcher); you may replace it with your own Azure app id in Settings
   width: null,
   height: null,
   fullscreen: false,
