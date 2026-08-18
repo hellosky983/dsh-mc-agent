@@ -1,8 +1,8 @@
-# dsh-mc-launcher bundle patch: mounts the Minecraft launcher into a dsh profile
+# dsh-mc-agent bundle patch: mounts the Minecraft launcher into a dsh profile
 # composition. The host half registers /api/mc/* on the web server; the client
 # half takes over the root slot and renders the full-screen launcher UI.
 #
-# Install: add "dsh-mc-launcher" to the profile's dsh.profile.bundles list.
+# Install: add "dsh-mc-agent" to the profile's dsh.profile.bundles list.
 - insert:
-    - id: dsh-mc-launcher
-      name: dsh-mc-launcher
+    - id: dsh-mc-agent
+      name: dsh-mc-agent

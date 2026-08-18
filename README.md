@@ -1,6 +1,6 @@
-# dsh-mc-launcher 🧱
+# dsh-mc-agent 🧱
 
-> 把 DeepSeek Harness 改造成 Minecraft 启动器：全屏启动器界面 + 版本下载 + 游戏启动，全部跑在 DSH 宿主进程里。
+> 让 AI 陪你玩 Minecraft：DeepSeek Harness 里的 AI 代理，能自主生存、探索、挖矿、聊天、看地图——顺便把启动器（版本下载 + 微软登录 + 游戏启动）也一起做了。
 > **UNOFFICIAL** — 非官方项目，与 Mojang Studios / Microsoft 无任何关联。
 
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
@@ -8,10 +8,11 @@
 
 ## 📖 项目简介
 
-`dsh-mc-launcher` 是 DeepSeek Harness（DSH）的一个正式 bundle 插件，让 Minecraft 能力成为 DSH 的一等公民：
+`dsh-mc-agent` 是 DeepSeek Harness（DSH）的一个正式 bundle 插件，让「AI 玩 Minecraft」成为 DSH 的一等公民：
 
-- **启动器**：宿主进程负责版本清单、文件下载、Microsoft 登录与 Java 游戏进程的启动；游戏目录默认 `~/.minecraft`，与官方启动器完全兼容（已有版本、存档、资源直接复用）。
-- **AI 工具**：把启动器与游戏数据暴露为 `mc_*` 工具，让 DSH 的 agent 能通过对话安装版本、启动游戏、分析崩溃、查询存档与模组。
+- **AI 代理**：通过 LAN 协议直连游戏，驱动真实的 Mineflayer 机器人——自主生存（采集/探索/岩浆水逃生）、挖矿砍树、游戏内聊天、实时地图；另有截图/识图/键鼠控制（视觉 + 控制闭环）。
+- **AI 工具**：把游戏数据与能力暴露为 `mc_*` 工具，让 DSH 的 agent 能通过对话指挥机器人、分析崩溃、查询存档与模组。
+- **内置启动器**：宿主进程负责版本清单、文件下载、Microsoft 登录与 Java 游戏进程的启动；游戏目录默认 `~/.minecraft`，与官方启动器完全兼容（已有版本、存档、资源直接复用）。
 - **双界面模式**：默认作为 DSH 聊天界面里的一个 "Minecraft" 标签页（保留全部 AI 能力）；也可切换为全屏启动器。
 
 ## ✨ 功能特性
@@ -65,12 +66,12 @@
 
 ```bash
 # 1. 克隆插件
-git clone https://github.com/hellosky983/dsh-mc-launcher.git
-cd dsh-mc-launcher
+git clone https://github.com/hellosky983/dsh-mc-agent.git
+cd dsh-mc-agent
 
 # 2. 编辑你的 profile 的 package.json（如 ~/.dsh/profiles/web/package.json）
-#    "dependencies":  { "dsh-mc-launcher": "link:/绝对路径/dsh-mc-launcher" }
-#    "dsh": { "profile": { "bundles": [ ..., "dsh-mc-launcher" ] } }
+#    "dependencies":  { "dsh-mc-agent": "link:/绝对路径/dsh-mc-agent" }
+#    "dsh": { "profile": { "bundles": [ ..., "dsh-mc-agent" ] } }
 
 # 3. 安装依赖并重启 DSH
 cd <你的profile目录> && pnpm install
@@ -81,16 +82,16 @@ cd <你的profile目录> && pnpm install
 ### 方式 B：作为独立 DSH 启动器实例（与现有 DSH 完全隔离）
 
 ```bash
-git clone https://github.com/hellosky983/dsh-mc-launcher.git
-cd dsh-mc-launcher
+git clone https://github.com/hellosky983/dsh-mc-agent.git
+cd dsh-mc-agent
 
 # 建独立 profile：<项目>/dsh-home/profiles/minecraft/package.json：
 #   {
 #     "name": "dsh-profile-minecraft",
 #     "private": true,
-#     "dependencies": { "dsh-mc-launcher": "link:../../../dsh-mc-launcher" },
+#     "dependencies": { "dsh-mc-agent": "link:../../../dsh-mc-agent" },
 #     "dsh": { "profile": { "bundles": [
-#         "@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "dsh-mc-launcher" ] } }
+#         "@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "dsh-mc-agent" ] } }
 #   }
 
 cd <项目>/dsh-home/profiles/minecraft && pnpm install
@@ -103,8 +104,8 @@ DSH_HOME=<项目>/dsh-home dsh --profile minecraft --port 39970
 
 ```bash
 # 1. 从 profile 的 package.json 中删除两处：
-#    - "dependencies" 里的 "dsh-mc-launcher" 条目
-#    - "dsh.profile.bundles" 数组里的 "dsh-mc-launcher"
+#    - "dependencies" 里的 "dsh-mc-agent" 条目
+#    - "dsh.profile.bundles" 数组里的 "dsh-mc-agent"
 # 2. 重新安装依赖（移除符号链接与 node_modules 中的包）
 cd <你的profile目录> && pnpm install
 # 3. 重启 DSH：页面即恢复为默认界面
@@ -156,7 +157,7 @@ cd <你的profile目录> && pnpm install
 ## 📁 项目结构
 
 ```
-dsh-mc-launcher/
+dsh-mc-agent/
 ├── package.json        # dsh.bundle.patch 声明 + dsh.client 注入
 ├── index.js            # Host 半：/api/mc/* 后端（清单/下载/登录/启动/日志）
 ├── lib/client.js       # Client 半：全屏启动器 UI（root slot，priority: -1）
@@ -174,7 +175,7 @@ DSH 会话（AI 聊天，可调用 mc_* 工具）
 浏览器（Minecraft 标签页 或 全屏启动器 UI）
    │  fetch /api/mc/*（同源 HTTP）
    ▼
-DSH 宿主进程（dsh-mc-launcher Host 半）
+DSH 宿主进程（dsh-mc-agent Host 半）
    ├─ Mojang 官方 API（version manifest / version json / assets）
    ├─ Microsoft OAuth2 设备码登录链（XBL → XSTS → Minecraft services）
    ├─ 并发下载 + natives 解压（adm-zip / unzip）
@@ -233,8 +234,8 @@ agent 循环（快速）：
 ## 🧪 开发与测试（Development）
 
 ```bash
-git clone https://github.com/hellosky983/dsh-mc-launcher.git
-cd dsh-mc-launcher && pnpm install        # 安装 dev 依赖（adm-zip 等）
+git clone https://github.com/hellosky983/dsh-mc-agent.git
+cd dsh-mc-agent && pnpm install        # 安装 dev 依赖（adm-zip 等）
 node --check index.js                      # Host 半语法检查
 node --check lib/client.js                 # Client 半语法检查
 ```
@@ -246,11 +247,11 @@ node --check lib/client.js                 # Client 半语法检查
 ## 🛡️ 安全报告（Security）
 
 - 本项目无遥测、无第三方统计；账号 token 仅存本机（`~/.dsh-mc/account.json`，权限 600）
-- 发现安全问题（如 token 泄露路径、注入、权限缺陷）请通过 [GitHub Issues](https://github.com/hellosky983/dsh-mc-launcher/issues) 私密/公开报告，或直接提交修复 PR
+- 发现安全问题（如 token 泄露路径、注入、权限缺陷）请通过 [GitHub Issues](https://github.com/hellosky983/dsh-mc-agent/issues) 私密/公开报告，或直接提交修复 PR
 - 请勿在 Issue 中粘贴真实 token 或账号信息
 
 ## 📄 许可证
 
-MIT © dsh-mc-launcher contributors。商标与内容声明见 [LICENSE](LICENSE)。
+MIT © dsh-mc-agent contributors。商标与内容声明见 [LICENSE](LICENSE)。
 
 Minecraft © Mojang Studios。本项目与 Mojang Studios / Microsoft 无关联。

@@ -1,5 +1,5 @@
 /**
- * dsh-mc-launcher — Host half
+ * dsh-mc-agent — Host half
  *
  * A real Minecraft launcher backend running inside the DSH host process.
  * Registers `/api/mc/*` routes on the web server; the client half renders the
@@ -49,7 +49,7 @@ function extractZip(zipPath, destDir) {
   })
 }
 
-export const name = 'dsh-mc-launcher'
+export const name = 'dsh-mc-agent'
 export const inject = ['webServer', 'tools', 'systemPrompt', 'llm', 'agentDefaultModel']
 
 // ---------------------------------------------------------------------------
@@ -193,7 +193,7 @@ function pushLog(line) {
 
 function logState(action, msg) {
   pushLog(`[launcher] ${action}: ${msg}`)
-  console.log(`[dsh-mc-launcher] ${action}: ${msg}`)
+  console.log(`[dsh-mc-agent] ${action}: ${msg}`)
 }
 
 // ---------------------------------------------------------------------------
@@ -565,7 +565,7 @@ function buildLaunchArgs(id, javaInfo, account) {
     '${game_assets}': assetsRoot,
     '${assets_root}': assetsRoot,
     '${assets_index_name}': assetIndexId,
-    '${launcher_name}': 'dsh-mc-launcher',
+    '${launcher_name}': 'dsh-mc-agent',
     '${launcher_version}': '0.1.0',
     '${classpath}': classpath,
     '${library_directory}': path.join(gameDir, 'libraries'),
@@ -898,7 +898,7 @@ async function oauthCallback(code, state, port) {
 
 function oauthCallbackHtml(ok, message) {
   const color = ok ? '#4ade80' : '#f87171'
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>DSH Minecraft Launcher \u00b7 Sign in</title></head>
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>DSH Minecraft Agent \u00b7 Sign in</title></head>
 <body style="margin:0;background:#0d1318;color:#e8e8e8;font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh">
 <div style="text-align:center">
 <div style="font-size:42px;font-weight:900;color:${color}">${ok ? '\u2713 Sign-in complete' : '\u2717 Sign-in failed'}</div>
